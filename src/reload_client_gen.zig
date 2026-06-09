@@ -1,27 +1,66 @@
-// sa_plugin_vite — reload client generator (PLACEHOLDER SCAFFOLD)
-//
-// Generates the tiny, MACHINE-GENERATED reload client injected into the served index.html.
-// This is the ONLY browser-side script vite adds. It is NOT user-authored JS and introduces
-// NO JS/TS build toolchain — same nature as sax's generated airlock.js.
-//
-// Pure no-JS-author hot reload is physically impossible in browsers: the reload trigger needs
-// some client code. We keep that code a generated constant, isolated from user source.
-//
-// TODO(Phase 1): emit the snippet below and inject before </body> of the sax-generated shell.
-//   Prefer requesting a stable injection hook from sa_plugin_sax's html_shell_gen.zig
-//   rather than brittle string splicing.
-
 const std = @import("std");
 
-// PLACEHOLDER snippet (intent only). ~5 lines, listens for rebuild signal and reloads.
-pub const reload_client_snippet =
-    \\<script>
-    \\  // sa_plugin_vite: generated reload client (not user JS). See plan.md Phase 1.
-    \\  new EventSource('/__sax_live').onmessage = function (e) {
-    \\    // TODO(Phase 2): if payload is an error, render overlay instead of reloading.
-    \\    location.reload();
-    \\  };
-    \\</script>
+pub const reload_client_path = "/__sax_live_client.js";
+
+pub const reload_client_script =
+    \\// sa_plugin_vite: generated reload client (not user JS).
+    \\function showError(message) {
+    \\  var el = document.getElementById('__sax_live_error');
+    \\  if (!el) {
+    \\    el = document.createElement('div');
+    \\    el.id = '__sax_live_error';
+    \\    el.style.cssText = 'position:fixed;left:16px;right:16px;bottom:16px;z-index:2147483647;background:#210b0b;color:#fff;border:1px solid #e35b5b;padding:12px;font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;box-shadow:0 8px 24px rgba(0,0,0,.28)';
+    \\    document.body.appendChild(el);
+    \\  }
+    \\  el.textContent = message;
+    \\}
+    \\function clearError() {
+    \\  var el = document.getElementById('__sax_live_error');
+    \\  if (el) el.remove();
+    \\}
+    \\var source = new EventSource('/__sax_live');
+    \\source.onmessage = function (event) {
+    \\  if (event.data && event.data.indexOf('error:') === 0) {
+    \\    showError('SAX rebuild failed. Fix the source and save again.\n' + event.data);
+    \\    return;
+    \\  }
+    \\  clearError();
+    \\  location.reload();
+    \\};
 ;
 
-// TODO(Phase 1): pub fn injectInto(html: []const u8, allocator) ![]u8 { ... }
+pub const reload_client_tag =
+    \\<script type="module" src="/__sax_live_client.js"></script>
+;
+
+pub fn injectInto(allocator: std.mem.Allocator, html: []const u8) ![]u8 {
+    if (std.mem.indexOf(u8, html, reload_client_path) != null) return try allocator.dupe(u8, html);
+
+    if (std.mem.lastIndexOf(u8, html, "</body>")) |idx| {
+        return try std.fmt.allocPrint(allocator, "{s}\n{s}\n{s}", .{
+            html[0..idx],
+            reload_client_tag,
+            html[idx..],
+        });
+    }
+
+    return try std.fmt.allocPrint(allocator, "{s}\n{s}\n", .{ html, reload_client_tag });
+}
+
+test "injects reload client before body close" {
+    const html = "<html><body><main></main></body></html>";
+    const injected = try injectInto(std.testing.allocator, html);
+    defer std.testing.allocator.free(injected);
+
+    try std.testing.expect(std.mem.indexOf(u8, injected, reload_client_path) != null);
+    const script_idx = std.mem.indexOf(u8, injected, "<script").?;
+    const body_idx = std.mem.indexOf(u8, injected, "</body>").?;
+    try std.testing.expect(script_idx < body_idx);
+}
+
+test "injection is idempotent" {
+    const html = "<html><body><script type=\"module\" src=\"/__sax_live_client.js\"></script></body></html>";
+    const injected = try injectInto(std.testing.allocator, html);
+    defer std.testing.allocator.free(injected);
+    try std.testing.expectEqualStrings(html, injected);
+}

@@ -1,15 +1,10 @@
-// sa_plugin_vite — SA-facing @extern contract (PLACEHOLDER SCAFFOLD)
-//
-// Every @extern here MUST have a matching exported symbol in libvite.so (design §1.7.1).
-// Complex objects are opaque u64/ptr handles with explicit *_free.
-//
-// TODO(Phase 1): finalize the dev-session surface and keep it in sync with vite_saasm_api.zig.
+// SA-facing ABI for the Vite-style SAX dev server plugin.
 
-// @extern sa_vite_dev_new(&out_handle: ptr) -> u32
-// @extern sa_vite_dev_set_entry(handle: ptr, &path: ptr, path_len: u64) -> u32
-// @extern sa_vite_dev_set_port(handle: ptr, port: u16) -> u32
-// @extern sa_vite_dev_run(handle: ptr) -> u32
-// @extern sa_vite_dev_stop(handle: ptr) -> u32
-// @extern sa_vite_dev_free(^handle: ptr) -> u32
-
-// PLACEHOLDER: no stable ABI yet. See plan.md Phase 1.
+@extern sa_vite_dev_new(&out_handle: ptr) -> u32
+@extern sa_vite_dev_set_entry(handle: ptr, &path: ptr, path_len: u64) -> u32
+@extern sa_vite_dev_set_out_dir(handle: ptr, &path: ptr, path_len: u64) -> u32
+@extern sa_vite_dev_set_port(handle: ptr, port: u16) -> u32
+@extern sa_vite_dev_set_debounce_ms(handle: ptr, debounce_ms: u64) -> u32
+@extern sa_vite_dev_run(handle: ptr) -> u32
+@extern sa_vite_dev_stop(handle: ptr) -> u32
+@extern sa_vite_dev_free(^handle: ptr) -> u32

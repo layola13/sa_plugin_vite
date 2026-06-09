@@ -1,12 +1,40 @@
-// sa_plugin_vite — SA-facing macros / layout facade (PLACEHOLDER SCAFFOLD)
-//
-// Constants and macro facades for SA-side callers of the vite dev surface.
-// No Promise/event objects across the ABI — opaque handles + poll/take only (design §1.7.1).
-//
-// TODO(Phase 1): define VITE_DEV_* status constants and convenience EXPAND macros.
+// Vite-style SAX dev server public SA macro facade.
+@import "vite.sai"
 
-// #def VITE_OK = 0
-// #def VITE_ERR_BUILD = 1
-// #def VITE_ERR_SERVE = 2
+#def VITE_OK = 0
+#def VITE_ERR_UNKNOWN_COMMAND = 1
+#def VITE_ERR_FAILED = 2
 
-// PLACEHOLDER: no macros yet. See plan.md Phase 1.
+[MACRO] VITE_DEV_NEW %out_handle, %out_status
+    __vite_handle_slot = stack_alloc 8
+    %out_status = call @sa_vite_dev_new(&__vite_handle_slot)
+    %out_handle = load __vite_handle_slot+0 as ptr
+[END_MACRO]
+
+[MACRO] VITE_DEV_SET_ENTRY %out_status, %handle, %path, %path_len
+    %out_status = call @sa_vite_dev_set_entry(%handle, &%path, %path_len)
+[END_MACRO]
+
+[MACRO] VITE_DEV_SET_OUT_DIR %out_status, %handle, %path, %path_len
+    %out_status = call @sa_vite_dev_set_out_dir(%handle, &%path, %path_len)
+[END_MACRO]
+
+[MACRO] VITE_DEV_SET_PORT %out_status, %handle, %port
+    %out_status = call @sa_vite_dev_set_port(%handle, %port)
+[END_MACRO]
+
+[MACRO] VITE_DEV_SET_DEBOUNCE_MS %out_status, %handle, %debounce_ms
+    %out_status = call @sa_vite_dev_set_debounce_ms(%handle, %debounce_ms)
+[END_MACRO]
+
+[MACRO] VITE_DEV_RUN %out_status, %handle
+    %out_status = call @sa_vite_dev_run(%handle)
+[END_MACRO]
+
+[MACRO] VITE_DEV_STOP %out_status, %handle
+    %out_status = call @sa_vite_dev_stop(%handle)
+[END_MACRO]
+
+[MACRO] VITE_DEV_FREE %out_status, %handle
+    %out_status = call @sa_vite_dev_free(^%handle)
+[END_MACRO]

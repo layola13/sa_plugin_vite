@@ -1,7 +1,7 @@
 {
   "schema": "sa.plugin/1",
   "name": "vite",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "source": {
     "type": "local",
     "path": "."
@@ -38,26 +38,35 @@
   },
   "dependencies": {
     "sax": {
-      "version": ">=0.0.0",
+      "version": ">=0.1.0",
       "abi": 1,
       "path": "../sa_plugin_sax",
-      "symbols": [
-        "TODO: confirm sax build entry — library symbol vs CLI subprocess (see plan.md §3)"
-      ]
+      "optional": false
     },
     "http-server": {
       "version": ">=0.1.0",
       "abi": 1,
       "path": "../sa_plugin_http_server",
+      "optional": false,
       "symbols": [
         "sa_http_server_new",
         "sa_http_server_start",
         "sa_http_server_accept",
+        "sa_http_server_req_get_method",
         "sa_http_server_req_get_path",
+        "sa_http_server_req_get_header",
+        "sa_http_server_req_get_body",
+        "sa_http_server_req_free",
+        "sa_http_server_resp_new",
+        "sa_http_server_resp_set_content_type",
+        "sa_http_server_resp_send",
         "sa_http_server_resp_stream_new",
         "sa_http_server_resp_stream_write",
         "sa_http_server_resp_stream_flush",
-        "sa_http_server_resp_stream_end"
+        "sa_http_server_resp_stream_end",
+        "sa_http_server_resp_stream_free",
+        "sa_http_server_resp_free",
+        "sa_http_server_free"
       ]
     }
   }

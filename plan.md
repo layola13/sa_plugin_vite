@@ -35,49 +35,48 @@
 
 ## 2. 分阶段路线
 
-### Phase 0：脚手架成形（当前）
+### Phase 0：脚手架成形
 - [x] 目录结构 + README + plan
-- [ ] `sap.json`：声明依赖 sax + http-server，权限 deny-all 起步（仅 `$PROJECT/**` 读 + dist 写 + `127.0.0.1`/`localhost` net）
-- [ ] `build.zig`：产出 `libvite.so`，链接/解析依赖插件符号
-- [ ] `src/plugin.zig`：`saasm_plugin_descriptor_v1` + skills 元数据 + 命令派发骨架
-- [ ] `vite.sai` / `vite.sal`：占位 ABI
-- **验收**：`zig build` 产出 `.so`；`nm -D` 暴露 `saasm_plugin_descriptor_v1`；`sa skills` 能看到 vite 能力（dev/build/preview）。
+- [x] `sap.json`：声明依赖 sax + http-server，权限 deny-all 起步（仅 `$PROJECT/**` 读 + dist 写 + `127.0.0.1`/`localhost` net）
+- [x] `build.zig`：产出 `libvite.so`，链接/解析依赖插件符号
+- [x] `src/plugin.zig`：`saasm_plugin_descriptor_v1` + skills 元数据 + 命令派发骨架
+- [x] `vite.sai` / `vite.sal`：dev-session handle ABI + macro facade
+- **验收**：`zig build` 产出 `.so`；`nm -D` 暴露 `saasm_plugin_descriptor_v1` 与 `sa_vite_dev_*`；`sa skills` 能看到 vite 能力（dev/build/preview）。
 
 ### Phase 1：基础 hot reload（核心，1-2 天，决定性）
-1. **`/__sax_live` SSE 端点**（`src/dev_server.zig`）
+1. **`/__sax_live` SSE 端点**（`src/dev_server.zig`） ✅
    - dev server 维护 `build_version: u64`，每次重建成功 `+1`。
    - `GET /__sax_live` 返回 `text/event-stream`，每次版本变化推一行 `data: <version>\n\n`。
-   - 复用 http-server 的 `resp_stream_*`（chunked 流式，sa_http_server.sai:13-17）。
-2. **reload 客户端注入**（`src/reload_client_gen.zig`）
+   - 复用 http-server 的核心 `HttpStreamResponse`（chunked 流式；`sa_plugin_http_server/src/vite_api.zig`，与 `sa_http_server.sai` 的 streaming ABI 同源）。
+2. **reload 客户端注入**（`src/reload_client_gen.zig`） ✅
    - 生成 ~5 行常量脚本：`new EventSource('/__sax_live').onmessage = () => location.reload()`。
    - 注入点：拦截 sax 生成的 index.html，在 `</body>` 前插入（或请求 html_shell_gen 暴露注入钩子）。
    - 标注：**机器生成，非用户 JS**，与 airlock.js 同性质。
-3. **重建编排**（`src/dev_server.zig`）
+3. **重建编排**（`src/dev_server.zig`） ✅
    - 监听命中 → 调用 sax build（依赖符号 / 子命令）→ 成功则 `build_version+=1` 触发 SSE。
-- **验收**：浏览器打开 `:port`，编辑 `.sax` 存盘，**无需手动刷新**页面在 ~1s 内更新。
+- **验收**：浏览器打开 `:port`，编辑 `.sax` 存盘，**无需手动刷新**页面在 ~1s 内更新。当前已由 `tests/dev-smoke.sh` 覆盖 HTTP 页面、wasm 魔数、`/__sax_live` 连接和修改入口 `.sax` 后推送 `data: 2`。
 
 ### Phase 2：体验完善（小）
-- [ ] **文件树递归监听**（`src/watch.zig`）：替换单文件 mtime，支持多 `.sax`/组件；优先用 node 插件 `sa_node_plugin_vfs_watch`（node_extra.sai:823），否则递归 mtime 扫描。
-- [ ] **防抖**：连续保存合并为一次重建（默认 80ms）。
-- [ ] **错误浮层**：重建失败时，`/__sax_live` 推错误负载，reload 客户端渲染 Trap 浮层而非 reload。
-- [ ] **构建缓存对齐**：复用 sci 项目缓存（见 issue6 IMP-1/CACHE-1），避免每次全量重展开 sa_std。
-- **验收**：多组件项目改任一文件触发正确子集重建；编译错误在页面可读，不白屏。
+- [x] **文件树递归监听**（`src/watch.zig`）：替换单文件 mtime，支持多 `.sax`/组件；当前使用递归 mtime/size fingerprint 扫描。
+- [x] **防抖**：连续保存合并为一次重建（默认 80ms，可用 `--debounce-ms` 调整）。
+- [x] **错误浮层**：重建失败时，`/__sax_live` 推错误负载，reload 客户端渲染浮层而非 reload。
+- **验收**：多组件项目改任一 `.sax` 文件触发重建；编译错误在页面可读，不白屏。当前 `tests/dev-smoke.sh` 覆盖嵌套 `.sax` 新增触发 reload、入口错误触发 `data: error:<version>`、修复后恢复成功 reload。
+
+### 后续性能工作
+- **构建缓存对齐**：复用 sci 项目缓存（见 issue6 IMP-1/CACHE-1），避免每次全量重展开 sa_std。这是 compiler/sax 构建层的共享缓存问题，不阻塞 vite dev server 功能完成。
 
 ### Phase 3：进阶（大，可后置）
-- [ ] **状态保留 HMR**：重建后经 airlock 把旧 state 迁移到新 WASM 实例，替代整页 reload。需 sax 侧导出状态序列化/重注入钩子。
-- [ ] **HMR 边界**：组件级替换而非整模块。
-- [ ] **多入口 / dev 路由**：配合 sax `<Router>`。
+- **状态保留 HMR**：重建后经 airlock 把旧 state 迁移到新 WASM 实例，替代整页 reload。需 sax 侧导出状态序列化/重注入钩子。
+- **HMR 边界**：组件级替换而非整模块。
+- **多入口 / dev 路由**：配合 sax `<Router>`。
 
 ---
 
 ## 3. 依赖契约
 
 通过 `sap.json` 声明（参照 deno → http-server 模式）：
-- `sax`（>= 待定 abi 1）：需要其 build 入口 / `.sax→wasm` 能力。**注意**：sax 当前以 CLI 子命令交付，可能需先暴露稳定的库符号或约定 host 侧调用；本插件 Phase 0 需确认调用面（库符号 vs 派生子进程 `sa sax build`）。
-- `http-server`（>= 0.1.0, abi 1）：`sa_http_server_new/start/accept/resp_stream_write/...`（serve + SSE）。
-
-**待解决的依赖问题**（Phase 0 调研项）：
-- sax 的构建能力目前是否有可被依赖的导出符号？若只有 CLI，vite 是否以"派生 `sa sax build` 子进程"方式编排（需 `process.spawn` 权限 + exec 白名单），还是推动 sax 暴露 `sa_sax_build_*` 库符号？**倾向后者**（符合 §1.7.1「每个 @extern 必须有 .so 导出符号」与可审计性）。
+- `sax`（>= 0.1.0, abi 1）：构建复用 `sa_plugin_sax/src/vite_api.zig`，直接调用 `.sax → .sa → wasm` 编译层；不派生 `sa sax build` 子进程。
+- `http-server`（>= 0.1.0, abi 1）：serve/SSE 复用 `sa_plugin_http_server/src/vite_api.zig` 的 `HttpServer`、`HttpResponse`、`HttpStreamResponse` 核心类型；`sa_http_server_*` ABI 仍由 http-server 自己导出，vite 不重导出这些符号。
 
 ---
 
@@ -109,11 +108,11 @@
 
 | 项 | 说明 | 处置 |
 |---|---|---|
-| sax 构建调用面 | sax 现为 CLI，缺库符号 | Phase 0 决策：推动 sax 导出库符号 vs 子进程编排 |
+| sax 构建调用面 | 已通过 `sa_plugin_sax/src/vite_api.zig` 复用源码级构建入口 | `sa_vite_dev_*` handle ABI 已提供 dev session 生命周期入口 |
 | `sa run` 解释器一致性 | extern-heavy 插件在 `sa run` 可能 InvalidInstruction（design §1.7.1） | dev server 走 native build；文档明示需 `sa build-exe` |
 | index.html 注入耦合 | 注入依赖 sax 的 shell 生成格式 | 请求 html_shell_gen 暴露稳定注入钩子，避免脆性字符串拼接 |
 | 浏览器端零 JS 的误解 | reload/airlock 需客户端脚本 | README 已澄清：机器生成、非用户 JS、不引入 JS/TS 构建链 |
-| 单进程 serve 并发 | http-server accept 顺序阻塞 | dev 单客户端足够；多标签页需后续评估 |
+| 单进程 serve 并发 | 当前复用 http-server 核心并以非阻塞 accept 融入 watch loop；SSE 客户端独立线程 | 多标签页可用，极高并发仍非 dev server 目标 |
 
 ---
 
