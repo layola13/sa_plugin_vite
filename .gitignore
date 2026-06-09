@@ -1,5 +1,6 @@
 zig-out/
 .zig-cache/
+.sa_cache/
 *.so
 *.o
 dist/
