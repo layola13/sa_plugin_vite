@@ -1,0 +1,12 @@
+// sa_plugin_vite — SA-facing macros / layout facade (PLACEHOLDER SCAFFOLD)
+//
+// Constants and macro facades for SA-side callers of the vite dev surface.
+// No Promise/event objects across the ABI — opaque handles + poll/take only (design §1.7.1).
+//
+// TODO(Phase 1): define VITE_DEV_* status constants and convenience EXPAND macros.
+
+// #def VITE_OK = 0
+// #def VITE_ERR_BUILD = 1
+// #def VITE_ERR_SERVE = 2
+
+// PLACEHOLDER: no macros yet. See plan.md Phase 1.

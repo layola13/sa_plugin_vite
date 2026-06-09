@@ -1,0 +1,64 @@
+{
+  "schema": "sa.plugin/1",
+  "name": "vite",
+  "version": "0.0.0",
+  "source": {
+    "type": "local",
+    "path": "."
+  },
+  "abi": {
+    "plugin": 1,
+    "saasm": ">=0.4.0",
+    "symbols": "vite.sai"
+  },
+  "artifacts": {
+    "linux-x86_64": {
+      "path": "zig-out/lib/libvite.so"
+    }
+  },
+  "interfaces": {
+    "sai": { "path": "vite.sai" },
+    "sal": { "path": "vite.sal" }
+  },
+  "skills": ["vite.dev", "vite.build", "vite.preview"],
+  "permissions": {
+    "fs": [
+      { "op": "read", "path": "$PROJECT/**" },
+      { "op": "metadata", "path": "$PROJECT/**" },
+      { "op": "read", "path": "$PROJECT/dist/**" },
+      { "op": "write", "path": "$PROJECT/dist/**" },
+      { "op": "create", "path": "$PROJECT/dist/**" }
+    ],
+    "net": [
+      { "url": "http://127.0.0.1", "methods": ["GET"] },
+      { "url": "http://localhost", "methods": ["GET"] }
+    ],
+    "env": ["HOME", "TMPDIR", "SA_*"],
+    "process": { "spawn": false, "exec": [] }
+  },
+  "dependencies": {
+    "sax": {
+      "version": ">=0.0.0",
+      "abi": 1,
+      "path": "../sa_plugin_sax",
+      "symbols": [
+        "TODO: confirm sax build entry — library symbol vs CLI subprocess (see plan.md §3)"
+      ]
+    },
+    "http-server": {
+      "version": ">=0.1.0",
+      "abi": 1,
+      "path": "../sa_plugin_http_server",
+      "symbols": [
+        "sa_http_server_new",
+        "sa_http_server_start",
+        "sa_http_server_accept",
+        "sa_http_server_req_get_path",
+        "sa_http_server_resp_stream_new",
+        "sa_http_server_resp_stream_write",
+        "sa_http_server_resp_stream_flush",
+        "sa_http_server_resp_stream_end"
+      ]
+    }
+  }
+}
