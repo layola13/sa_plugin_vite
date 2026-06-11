@@ -35,8 +35,8 @@ vite 插件自己只负责：
 
 | 命令 | 说明 | 状态 |
 |------|------|------|
-| `sa vite dev <entry.sax> [--out-dir <dir>] [--port <port>] [--debounce-ms <ms>]` | 启动 dev server + 递归 `.sax` 监听 + 热重载 | ✅ 可用 |
-| `sa vite build <entry.sax> [--out-dir <dir>]` | 一次性构建，生成可静态部署产物 | ✅ 可用 |
+| `sa vite dev <entry.sax> [--react] [--include <file.sax>] [--out-dir <dir>] [--port <port>] [--debounce-ms <ms>] [--title <title>] [--css <file>] [--public-dir <dir>]` | 启动 dev server + 递归 `.sax`/资源监听 + 热重载 | ✅ 可用 |
+| `sa vite build <entry.sax> [--react] [--include <file.sax>] [--out-dir <dir>] [--title <title>] [--css <file>] [--public-dir <dir>]` | 一次性构建，生成可静态部署产物 | ✅ 可用 |
 | `sa vite preview [dist-dir] [--port <port>]` | 预览已构建产物，不监听文件变化 | ✅ 可用 |
 
 ## 启动参数
@@ -44,30 +44,38 @@ vite 插件自己只负责：
 ### `sa vite dev`
 
 ```bash
-sa vite dev <entry.sax> [--out-dir <dir>] [--port <port>] [--debounce-ms <ms>]
+sa vite dev <entry.sax> [--react] [--include <file.sax>] [--out-dir <dir>] [--port <port>] [--debounce-ms <ms>] [--title <title>] [--css <file>] [--public-dir <dir>]
 ```
 
 - `<entry.sax>`：入口 SAX 文件，必填。
+- `--react`：使用 `sa_plugin_react` 的 React/SAX 编译链，适合 React-style `className`、组件组合和 MUI 组件库入口。
+- `--include <file.sax>` / `-I <file.sax>`：React 模式下追加组件库源码，可重复传入；解析规则与 `sa react build --include` 对齐。
 - `--out-dir <dir>`：构建产物目录，默认是入口文件所在目录下的 `dist`。
 - `--port <port>`：HTTP dev server 端口，默认 `5173`。
 - `--debounce-ms <ms>`：递归 `.sax` 文件监听的防抖时间，默认 `80` 毫秒。
+- `--title <title>`：覆盖生成的 HTML `<title>`。
+- `--css <file>`：复制一个 CSS 文件到 dist，并向 `index.html` 注入 stylesheet link。dev 模式会监听这个文件。
+- `--public-dir <dir>`：递归复制静态资源目录到 dist。dev 模式会监听该目录下的文件变化。
 
-`dev` 模式会在生成的 `index.html` 中注入同源外部脚本 `/__sax_live_client.js`，浏览器通过 `/__sax_live` SSE 接收 reload/error 事件。修改入口目录下任意 `.sax` 文件都会触发重新构建；构建成功后浏览器刷新，构建失败时页面显示错误浮层。
+`dev` 模式会在生成的 `index.html` 中注入同源外部脚本 `/__sax_live_client.js`，浏览器通过 `/__sax_live` SSE 接收 reload/error 事件。修改入口目录下任意 `.sax` 文件或 React include 会触发重新构建；修改 `--css` 文件或 `--public-dir` 下的资源只刷新对应静态资源并推送浏览器 reload，不会重新编译 wasm。构建失败时页面显示错误浮层。
 
 示例：
 
 ```bash
-sa vite dev examples/counter.sax --out-dir /tmp/sa-vite-demo/dist --port 5199 --debounce-ms 20
+sa vite dev examples/counter.sax --out-dir /tmp/sa-vite-demo/dist --port 5199 --debounce-ms 20 --title "SA Vite Demo" --css assets/demo.css --public-dir public
+sa vite dev demos/mui_dashboard.sax --react --include mui/material.sax --out-dir .zig-cache/mui-dashboard-dev --port 5173 --title "SA MUI Component Dashboard" --css assets/mui_dashboard.css
 ```
 
 ### `sa vite build`
 
 ```bash
-sa vite build <entry.sax> [--out-dir <dir>]
+sa vite build <entry.sax> [--react] [--include <file.sax>] [--out-dir <dir>] [--title <title>] [--css <file>] [--public-dir <dir>]
 ```
 
 - `<entry.sax>`：入口 SAX 文件，必填。
+- `--react` / `--include <file.sax>`：与 dev 模式相同，用于 React/SAX 和组件库构建。
 - `--out-dir <dir>`：构建产物目录，默认是入口文件所在目录下的 `dist`。
+- `--title <title>` / `--css <file>` / `--public-dir <dir>`：与 dev 模式相同，用于生成可直接静态部署的完整 demo 产物。
 
 `build` 模式只生成静态产物，不注入 live reload 客户端。
 

@@ -21,6 +21,9 @@ trap cleanup EXIT
 mkdir -p "$work_dir/project"
 cp /home/vscode/projects/sa_plugins/sa_plugin_sax/demos/counter.sax "$work_dir/project/app.sax"
 cp "$work_dir/project/app.sax" "$work_dir/project/app.valid.sax"
+printf 'body { color: #172033; }\n' > "$work_dir/project/style.css"
+mkdir -p "$work_dir/project/public"
+printf 'asset-ok\n' > "$work_dir/project/public/info.txt"
 
 cd "$plugin_dir"
 zig build test --summary all >/dev/null
@@ -40,14 +43,17 @@ done
 SA_PLUGINS_HOME="$plugin_home" SA_PLUGIN_DEV=1 "$sa_bin" plugin install --dev "$plugin_dir" >/dev/null
 SA_PLUGINS_HOME="$plugin_home" SA_PLUGIN_DEV=1 "$sa_bin" plugin list | grep -F $'vite	' >/dev/null
 
-SA_PLUGINS_HOME="$plugin_home" SA_PLUGIN_DEV=1 "$sa_bin" vite build "$work_dir/project/app.sax" --out-dir "$work_dir/project/dist" >/dev/null
+SA_PLUGINS_HOME="$plugin_home" SA_PLUGIN_DEV=1 "$sa_bin" vite build "$work_dir/project/app.sax" --out-dir "$work_dir/project/dist" --title "Smoke Demo" --css "$work_dir/project/style.css" --public-dir "$work_dir/project/public" >/dev/null
 test -s "$work_dir/project/dist/app.wasm"
 ! grep -F "/__sax_live" "$work_dir/project/dist/index.html" >/dev/null
+grep -F "Smoke Demo" "$work_dir/project/dist/index.html" >/dev/null
+grep -F "style.css" "$work_dir/project/dist/index.html" >/dev/null
+grep -F "asset-ok" "$work_dir/project/dist/info.txt" >/dev/null
 
 SA_PLUGINS_HOME="$plugin_home" SA_PLUGIN_DEV=1 "$sa_bin" vite build "$plugin_dir/examples/counter.sax" --out-dir "$work_dir/example-dist" >/dev/null
 test -s "$work_dir/example-dist/app.wasm"
 
-SA_PLUGINS_HOME="$plugin_home" SA_PLUGIN_DEV=1 "$sa_bin" vite dev "$work_dir/project/app.sax" --out-dir "$work_dir/project/dist" --port "$port" --debounce-ms 20 >"$server_log" 2>&1 &
+SA_PLUGINS_HOME="$plugin_home" SA_PLUGIN_DEV=1 "$sa_bin" vite dev "$work_dir/project/app.sax" --out-dir "$work_dir/project/dist" --port "$port" --debounce-ms 20 --title "Smoke Demo" --css "$work_dir/project/style.css" --public-dir "$work_dir/project/public" >"$server_log" 2>&1 &
 server_pid=$!
 
 for _ in $(seq 1 80); do
@@ -60,6 +66,8 @@ grep -F "vite dev server listening" "$server_log" >/dev/null
 
 curl -fsS "http://127.0.0.1:$port/" | grep -F "/__sax_live_client.js" >/dev/null
 curl -fsS "http://127.0.0.1:$port/__sax_live_client.js" | grep -F "/__sax_live" >/dev/null
+curl -fsS "http://127.0.0.1:$port/style.css" | grep -F "#172033" >/dev/null
+curl -fsS "http://127.0.0.1:$port/info.txt" | grep -F "asset-ok" >/dev/null
 curl -fsS -o "$work_dir/app.wasm" "http://127.0.0.1:$port/app.wasm"
 head -c 4 "$work_dir/app.wasm" | od -An -tx1 | grep -F "00 61 73 6d" >/dev/null
 
@@ -104,8 +112,24 @@ for _ in $(seq 1 80); do
   fi
   sleep 0.1
 done
+printf 'body { color: #2d6cdf; }\n' > "$work_dir/project/style.css"
+for _ in $(seq 1 80); do
+  if grep -F "data: 6" "$sse_out" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.1
+done
+grep -F "data: 6" "$sse_out" >/dev/null
+printf 'asset-reloaded\n' > "$work_dir/project/public/info.txt"
+for _ in $(seq 1 80); do
+  if grep -F "data: 7" "$sse_out" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.1
+done
 kill "$curl_pid" 2>/dev/null || true
 wait "$curl_pid" 2>/dev/null || true
 grep -F "data: 5" "$sse_out" >/dev/null
+grep -F "data: 7" "$sse_out" >/dev/null
 
 echo "[vite-smoke] ok"

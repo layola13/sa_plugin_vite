@@ -9,6 +9,7 @@ pub fn build(b: *std.Build) void {
     const sa_repo_root = b.option([]const u8, "sa-repo-root", "SA repository root used to resolve sa_std imports.") orelse "/home/vscode/projects/sci";
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "repo_root", sa_repo_root);
+    const build_options_module = build_options.createModule();
 
     const plugin_api = b.createModule(.{
         .root_source_file = b.path("src/plugin_api.zig"),
@@ -20,7 +21,13 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    sax_vite_api.addOptions("build_options", build_options);
+    sax_vite_api.addImport("build_options", build_options_module);
+    const react_vite_api = b.createModule(.{
+        .root_source_file = b.path("../sa_plugin_react/src/vite_api.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    react_vite_api.addImport("build_options", build_options_module);
     const http_vite_api = b.createModule(.{
         .root_source_file = b.path("../sa_plugin_http_server/src/vite_api.zig"),
         .target = target,
@@ -34,6 +41,7 @@ pub fn build(b: *std.Build) void {
     });
     root_module.addImport("plugin_api", plugin_api);
     root_module.addImport("sax_vite_api", sax_vite_api);
+    root_module.addImport("react_vite_api", react_vite_api);
     root_module.addImport("http_vite_api", http_vite_api);
     addLlvmcShimToModule(b, root_module);
     linkLLVMToModule(root_module, llvm_include_dir, llvm_lib_dir, llvm_lib_name);

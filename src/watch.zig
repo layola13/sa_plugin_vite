@@ -20,7 +20,19 @@ fn mixFile(hasher: *std.hash.Wyhash, rel_path: []const u8, stat: std.fs.File.Sta
     hasher.update(&size_buf);
 }
 
-fn scanDir(allocator: std.mem.Allocator, root: []const u8, rel: []const u8, hasher: *std.hash.Wyhash, count: *u64) !void {
+const ScanMode = enum {
+    sax_only,
+    all_files,
+};
+
+fn includeFile(mode: ScanMode, name: []const u8) bool {
+    return switch (mode) {
+        .sax_only => std.mem.endsWith(u8, name, ".sax"),
+        .all_files => true,
+    };
+}
+
+fn scanDir(allocator: std.mem.Allocator, root: []const u8, rel: []const u8, hasher: *std.hash.Wyhash, count: *u64, mode: ScanMode) !void {
     const dir_path = if (rel.len == 0) try allocator.dupe(u8, root) else try std.fs.path.join(allocator, &.{ root, rel });
     defer allocator.free(dir_path);
 
@@ -33,11 +45,11 @@ fn scanDir(allocator: std.mem.Allocator, root: []const u8, rel: []const u8, hash
             if (shouldSkipDir(entry.name)) continue;
             const child_rel = if (rel.len == 0) try allocator.dupe(u8, entry.name) else try std.fs.path.join(allocator, &.{ rel, entry.name });
             defer allocator.free(child_rel);
-            try scanDir(allocator, root, child_rel, hasher, count);
+            try scanDir(allocator, root, child_rel, hasher, count, mode);
             continue;
         }
         if (entry.kind != .file and entry.kind != .sym_link) continue;
-        if (!std.mem.endsWith(u8, entry.name, ".sax")) continue;
+        if (!includeFile(mode, entry.name)) continue;
 
         const rel_path = if (rel.len == 0) try allocator.dupe(u8, entry.name) else try std.fs.path.join(allocator, &.{ rel, entry.name });
         defer allocator.free(rel_path);
@@ -52,10 +64,27 @@ fn scanDir(allocator: std.mem.Allocator, root: []const u8, rel: []const u8, hash
 pub fn fingerprint(allocator: std.mem.Allocator, root: []const u8) !u64 {
     var hasher = std.hash.Wyhash.init(0x5a17_710e_d15c_a55a);
     var count: u64 = 0;
-    try scanDir(allocator, root, "", &hasher, &count);
+    try scanDir(allocator, root, "", &hasher, &count, .sax_only);
     var count_buf: [8]u8 = undefined;
     std.mem.writeInt(u64, &count_buf, count, .little);
     hasher.update(&count_buf);
+    return hasher.final();
+}
+
+pub fn fingerprintAll(allocator: std.mem.Allocator, root: []const u8) !u64 {
+    var hasher = std.hash.Wyhash.init(0x5a17_a11f_11e5_a55a);
+    var count: u64 = 0;
+    try scanDir(allocator, root, "", &hasher, &count, .all_files);
+    var count_buf: [8]u8 = undefined;
+    std.mem.writeInt(u64, &count_buf, count, .little);
+    hasher.update(&count_buf);
+    return hasher.final();
+}
+
+pub fn fingerprintFile(path: []const u8) !u64 {
+    var hasher = std.hash.Wyhash.init(0x5a17_f11e_d15c_a55a);
+    const stat = try std.fs.cwd().statFile(path);
+    mixFile(&hasher, path, stat);
     return hasher.final();
 }
 
@@ -86,5 +115,20 @@ test "fingerprint includes nested sax files" {
     const before = try fingerprint(std.testing.allocator, root);
     try tmp.dir.writeFile(.{ .sub_path = "components/child.sax", .data = "<Component name=\"B\"><div></div></Component>" });
     const after = try fingerprint(std.testing.allocator, root);
+    try std.testing.expect(before != after);
+}
+
+test "fingerprintAll changes for non sax edits" {
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{ .sub_path = "style.css", .data = "body{}" });
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+
+    const before = try fingerprintAll(std.testing.allocator, root);
+    std.Thread.sleep(1 * std.time.ns_per_ms);
+    try tmp.dir.writeFile(.{ .sub_path = "style.css", .data = "body{color:red}" });
+    const after = try fingerprintAll(std.testing.allocator, root);
     try std.testing.expect(before != after);
 }

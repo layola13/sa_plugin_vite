@@ -9,8 +9,10 @@ const skills = [_]plugin_api.SkillSection{
         .summary = "SAX dev server orchestration with browser reload planning",
         .items = &.{
             "vite dev <entry.sax>      # watch + rebuild + hot reload on http://127.0.0.1:<port>",
-            "vite build <entry.sax>    # one-shot production build delegated to sax",
+            "vite build <entry.sax>    # one-shot production build delegated to sax/react",
             "vite preview              # serve a prior build",
+            "--react --include <file.sax> routes builds through sa_plugin_react composition",
+            "--title/--css/--public-dir copy demo assets and inject stylesheet links during rebuilds",
             "edits to .sax trigger automatic browser reload without a JS/TS toolchain",
         },
     },
@@ -53,8 +55,8 @@ fn cArgvToSlice(argv: []const [*:0]const u8, allocator: std.mem.Allocator) ![]co
 fn writeUsage(writer: std.io.AnyWriter) !void {
     try writer.writeAll(
         \\usage: sa vite <dev|build|preview> [args...]\n
-        \\  sa vite dev <entry.sax>\n
-        \\  sa vite build <entry.sax>\n
+        \\  sa vite dev <entry.sax> [--react] [--include <file.sax>] [--out-dir <dir>] [--port <port>] [--debounce-ms <ms>] [--title <title>] [--css <file>] [--public-dir <dir>]\n
+        \\  sa vite build <entry.sax> [--react] [--include <file.sax>] [--out-dir <dir>] [--title <title>] [--css <file>] [--public-dir <dir>]\n
         \\  sa vite preview [dist-dir]\n
     );
 }
@@ -64,10 +66,22 @@ fn parsePort(text: []const u8) !u16 {
 }
 
 const DevArgs = struct {
+    const max_includes = 16;
+
     entry: []const u8,
     dist_dir: ?[]const u8 = null,
     port: u16 = 5173,
     debounce_ms: u64 = 80,
+    use_react: bool = false,
+    includes: [max_includes][]const u8 = undefined,
+    includes_len: usize = 0,
+    title: ?[]const u8 = null,
+    css: ?[]const u8 = null,
+    public_dir: ?[]const u8 = null,
+
+    fn includeSlice(self: *const DevArgs) []const []const u8 {
+        return self.includes[0..self.includes_len];
+    }
 };
 
 fn parseEntryCommandArgs(argv: []const []const u8, start: usize) !DevArgs {
@@ -88,6 +102,26 @@ fn parseEntryCommandArgs(argv: []const []const u8, start: usize) !DevArgs {
             idx += 1;
             if (idx >= argv.len) return error.MissingOptionValue;
             out.debounce_ms = std.fmt.parseInt(u64, argv[idx], 10) catch return error.InvalidDebounce;
+        } else if (std.mem.eql(u8, arg, "--react")) {
+            out.use_react = true;
+        } else if (std.mem.eql(u8, arg, "--include") or std.mem.eql(u8, arg, "-I")) {
+            idx += 1;
+            if (idx >= argv.len) return error.MissingOptionValue;
+            if (out.includes_len >= DevArgs.max_includes) return error.TooManyIncludes;
+            out.includes[out.includes_len] = argv[idx];
+            out.includes_len += 1;
+        } else if (std.mem.eql(u8, arg, "--title")) {
+            idx += 1;
+            if (idx >= argv.len) return error.MissingOptionValue;
+            out.title = argv[idx];
+        } else if (std.mem.eql(u8, arg, "--css")) {
+            idx += 1;
+            if (idx >= argv.len) return error.MissingOptionValue;
+            out.css = argv[idx];
+        } else if (std.mem.eql(u8, arg, "--public-dir")) {
+            idx += 1;
+            if (idx >= argv.len) return error.MissingOptionValue;
+            out.public_dir = argv[idx];
         } else {
             return error.UnexpectedArgument;
         }
@@ -121,14 +155,15 @@ fn writeCliError(writer: std.io.AnyWriter, err: anyerror, subcommand: []const u8
         error.MissingOptionValue => "missing option value",
         error.InvalidPort => "invalid port",
         error.InvalidDebounce => "invalid debounce window",
+        error.TooManyIncludes => "too many include files",
         error.UnexpectedArgument => "unexpected argument",
         else => @errorName(err),
     };
     try writer.print("error[SA-VITE-CLI]: {s}\n", .{message});
     if (std.mem.eql(u8, subcommand, "dev")) {
-        try writer.writeAll("  help: usage: sa vite dev <entry.sax> [--out-dir <dir>] [--port <port>] [--debounce-ms <ms>]\n");
+        try writer.writeAll("  help: usage: sa vite dev <entry.sax> [--react] [--include <file.sax>] [--out-dir <dir>] [--port <port>] [--debounce-ms <ms>] [--title <title>] [--css <file>] [--public-dir <dir>]\n");
     } else if (std.mem.eql(u8, subcommand, "build")) {
-        try writer.writeAll("  help: usage: sa vite build <entry.sax> [--out-dir <dir>]\n");
+        try writer.writeAll("  help: usage: sa vite build <entry.sax> [--react] [--include <file.sax>] [--out-dir <dir>] [--title <title>] [--css <file>] [--public-dir <dir>]\n");
     } else if (std.mem.eql(u8, subcommand, "preview")) {
         try writer.writeAll("  help: usage: sa vite preview [dist-dir] [--port <port>]\n");
     }
@@ -152,6 +187,11 @@ fn runViteCommand(ctx: *const plugin_api.Context, argv: []const []const u8, stdo
             .dist_dir = parsed.dist_dir,
             .port = parsed.port,
             .debounce_ms = parsed.debounce_ms,
+            .use_react = parsed.use_react,
+            .includes = parsed.includeSlice(),
+            .title = parsed.title,
+            .css = parsed.css,
+            .public_dir = parsed.public_dir,
         }, stdout, stderr);
     }
     if (std.mem.eql(u8, subcommand, "build")) {
@@ -159,7 +199,13 @@ fn runViteCommand(ctx: *const plugin_api.Context, argv: []const []const u8, stdo
             try writeCliError(stderr, err, subcommand);
             return 1;
         };
-        return try dev_server.runBuild(ctx.allocator, parsed.entry, parsed.dist_dir, stdout, stderr);
+        return try dev_server.runBuild(ctx.allocator, parsed.entry, parsed.dist_dir, .{
+            .use_react = parsed.use_react,
+            .includes = parsed.includeSlice(),
+            .title = parsed.title,
+            .css = parsed.css,
+            .public_dir = parsed.public_dir,
+        }, stdout, stderr);
     }
     if (std.mem.eql(u8, subcommand, "preview")) {
         const parsed = parsePreviewArgs(argv, 3) catch |err| {
@@ -176,14 +222,20 @@ fn runViteCommand(ctx: *const plugin_api.Context, argv: []const []const u8, stdo
 
 fn runViteCommandAbi(ctx: *const plugin_api.Context, argv: [*]const [*:0]const u8, argv_len: usize, stdout: plugin_api.HostStream, stderr: plugin_api.HostStream, out_code: *u8) callconv(.c) u32 {
     out_code.* = 0;
+    const allocator = std.heap.page_allocator;
+    var local_ctx = ctx.*;
+    local_ctx.allocator = allocator;
     var stdout_ctx = StreamCtx{ .stream = stdout };
     var stderr_ctx = StreamCtx{ .stream = stderr };
     const stdout_writer = std.io.AnyWriter{ .context = &stdout_ctx, .writeFn = writeAll };
     const stderr_writer = std.io.AnyWriter{ .context = &stderr_ctx, .writeFn = writeAll };
-    const args = cArgvToSlice(argv[0..argv_len], ctx.allocator) catch return @intFromEnum(plugin_api.AbiStatus.failed);
-    defer ctx.allocator.free(args);
+    const args = cArgvToSlice(argv[0..argv_len], allocator) catch return @intFromEnum(plugin_api.AbiStatus.failed);
+    defer allocator.free(args);
 
-    const result = runViteCommand(ctx, args, stdout_writer, stderr_writer) catch return @intFromEnum(plugin_api.AbiStatus.failed);
+    const result = runViteCommand(&local_ctx, args, stdout_writer, stderr_writer) catch |err| {
+        stderr_writer.print("error[SA-VITE]: command failed: {}\n", .{err}) catch {};
+        return @intFromEnum(plugin_api.AbiStatus.failed);
+    };
     if (result) |code| {
         out_code.* = code;
         return @intFromEnum(plugin_api.AbiStatus.ok);
@@ -243,10 +295,16 @@ test "vite command validates missing entry" {
 }
 
 test "vite command parses build options" {
-    const parsed = try parseEntryCommandArgs(&.{ "sa", "vite", "build", "app.sax", "--out-dir", "dist-vite", "--port", "5180" }, 3);
+    const parsed = try parseEntryCommandArgs(&.{ "sa", "vite", "build", "app.sax", "--react", "--include", "mui/material.sax", "--out-dir", "dist-vite", "--port", "5180", "--title", "Demo", "--css", "style.css", "--public-dir", "public" }, 3);
     try std.testing.expectEqualStrings("app.sax", parsed.entry);
+    try std.testing.expect(parsed.use_react);
+    try std.testing.expectEqual(@as(usize, 1), parsed.includes_len);
+    try std.testing.expectEqualStrings("mui/material.sax", parsed.includeSlice()[0]);
     try std.testing.expectEqualStrings("dist-vite", parsed.dist_dir.?);
     try std.testing.expectEqual(@as(u16, 5180), parsed.port);
+    try std.testing.expectEqualStrings("Demo", parsed.title.?);
+    try std.testing.expectEqualStrings("style.css", parsed.css.?);
+    try std.testing.expectEqualStrings("public", parsed.public_dir.?);
 }
 
 test "vite command parses debounce option" {
