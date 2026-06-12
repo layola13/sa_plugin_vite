@@ -43,6 +43,7 @@ pub fn build(b: *std.Build) void {
     root_module.addImport("sax_vite_api", sax_vite_api);
     root_module.addImport("react_vite_api", react_vite_api);
     root_module.addImport("http_vite_api", http_vite_api);
+    root_module.addImport("build_options", build_options_module);
     addLlvmcShimToModule(b, root_module);
     linkLLVMToModule(root_module, llvm_include_dir, llvm_lib_dir, llvm_lib_name);
 

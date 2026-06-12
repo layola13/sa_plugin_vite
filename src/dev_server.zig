@@ -1,4 +1,5 @@
 const std = @import("std");
+const build_config = @import("build_options");
 const sax_api = @import("sax_vite_api");
 const sax_build = sax_api.build;
 const react_api = @import("react_vite_api");
@@ -64,6 +65,13 @@ const DevFingerprint = struct {
     fn eql(a: DevFingerprint, b: DevFingerprint) bool {
         return a.source == b.source and a.css == b.css and a.public == b.public;
     }
+};
+
+const build_cache_version = "sa-vite-build-cache-v1";
+
+const BuildCacheStatus = enum {
+    hit,
+    miss,
 };
 
 fn sourceStem(path: []const u8) []const u8 {
@@ -148,6 +156,205 @@ fn injectStylesheet(allocator: std.mem.Allocator, html: []const u8, href: []cons
     return try std.fmt.allocPrint(allocator, "{s}\n{s}\n", .{ html, link_tag });
 }
 
+fn mixU64(hasher: *std.hash.Wyhash, value: u64) void {
+    var buf: [8]u8 = undefined;
+    std.mem.writeInt(u64, &buf, value, .little);
+    hasher.update(&buf);
+}
+
+fn mixI128(hasher: *std.hash.Wyhash, value: i128) void {
+    var buf: [16]u8 = undefined;
+    std.mem.writeInt(i128, &buf, value, .little);
+    hasher.update(&buf);
+}
+
+fn mixBool(hasher: *std.hash.Wyhash, value: bool) void {
+    hasher.update(if (value) "\x01" else "\x00");
+}
+
+fn mixBytes(hasher: *std.hash.Wyhash, bytes: []const u8) void {
+    mixU64(hasher, bytes.len);
+    hasher.update(bytes);
+}
+
+fn mixOptionalBytes(hasher: *std.hash.Wyhash, bytes: ?[]const u8) void {
+    if (bytes) |value| {
+        mixBool(hasher, true);
+        mixBytes(hasher, value);
+    } else {
+        mixBool(hasher, false);
+    }
+}
+
+fn mixBuildOptions(hasher: *std.hash.Wyhash, options: BuildOptions) void {
+    mixBool(hasher, options.use_react);
+    mixU64(hasher, options.includes.len);
+    for (options.includes) |include_file| mixBytes(hasher, include_file);
+    mixOptionalBytes(hasher, options.title);
+    mixOptionalBytes(hasher, options.css);
+    mixOptionalBytes(hasher, options.public_dir);
+}
+
+fn mixSaStdFingerprint(allocator: std.mem.Allocator, hasher: *std.hash.Wyhash) !void {
+    const std_root = try std.fs.path.join(allocator, &.{ build_config.repo_root, "sa_std" });
+    defer allocator.free(std_root);
+    mixBytes(hasher, build_config.repo_root);
+    const fingerprint_value = try watch.fingerprintAll(allocator, std_root);
+    mixU64(hasher, fingerprint_value);
+}
+
+fn mixPluginPathFingerprint(allocator: std.mem.Allocator, hasher: *std.hash.Wyhash, path: []const u8) !void {
+    mixBytes(hasher, path);
+    const stat = std.fs.cwd().statFile(path) catch |err| {
+        mixBool(hasher, false);
+        mixBytes(hasher, @errorName(err));
+        return;
+    };
+    mixBool(hasher, true);
+    mixU64(hasher, stat.size);
+    mixI128(hasher, stat.mtime);
+    var file = if (std.fs.path.isAbsolute(path))
+        std.fs.openFileAbsolute(path, .{}) catch |err| {
+            mixBool(hasher, false);
+            mixBytes(hasher, @errorName(err));
+            return;
+        }
+    else
+        std.fs.cwd().openFile(path, .{}) catch |err| {
+            mixBool(hasher, false);
+            mixBytes(hasher, @errorName(err));
+            return;
+        };
+    defer file.close();
+    const bytes = try file.readToEndAlloc(allocator, 256 * 1024 * 1024);
+    defer allocator.free(bytes);
+    mixBool(hasher, true);
+    mixBytes(hasher, bytes);
+}
+
+fn mixPluginEnvironmentFingerprint(allocator: std.mem.Allocator, hasher: *std.hash.Wyhash) !void {
+    const value = std.process.getEnvVarOwned(allocator, "SA_PLUGINS_PATH") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => {
+            mixBool(hasher, false);
+            return;
+        },
+        else => return err,
+    };
+    defer allocator.free(value);
+
+    mixBool(hasher, true);
+    mixBytes(hasher, value);
+    var parts = std.mem.splitScalar(u8, value, ':');
+    while (parts.next()) |part| {
+        if (part.len == 0) continue;
+        try mixPluginPathFingerprint(allocator, hasher, part);
+    }
+}
+
+fn buildFingerprint(allocator: std.mem.Allocator, entry_sax: []const u8, watch_root: []const u8, options: BuildOptions) !u64 {
+    const inputs = try devFingerprint(allocator, entry_sax, watch_root, options);
+    var hasher = std.hash.Wyhash.init(0x5a17_b117_cace_a55a);
+    mixBytes(&hasher, build_cache_version);
+    try mixSaStdFingerprint(allocator, &hasher);
+    try mixPluginEnvironmentFingerprint(allocator, &hasher);
+    mixU64(&hasher, inputs.source);
+    mixBool(&hasher, inputs.css != null);
+    if (inputs.css) |css| mixU64(&hasher, css);
+    mixBool(&hasher, inputs.public != null);
+    if (inputs.public) |public| mixU64(&hasher, public);
+    mixBuildOptions(&hasher, options);
+    return hasher.final();
+}
+
+fn buildCacheManifestPath(allocator: std.mem.Allocator, dist_dir: []const u8) ![]u8 {
+    return try std.fs.path.join(allocator, &.{ dist_dir, ".sa_vite_build_cache" });
+}
+
+fn buildCacheFingerprintText(allocator: std.mem.Allocator, fingerprint: u64) ![]u8 {
+    return try std.fmt.allocPrint(allocator, "{s}\n{x}\n", .{ build_cache_version, fingerprint });
+}
+
+fn readBuildCacheFingerprint(allocator: std.mem.Allocator, dist_dir: []const u8) !?u64 {
+    const manifest_path = try buildCacheManifestPath(allocator, dist_dir);
+    defer allocator.free(manifest_path);
+
+    const bytes = std.fs.cwd().readFileAlloc(allocator, manifest_path, 4096) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+    defer allocator.free(bytes);
+
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    const version = lines.next() orelse return null;
+    if (!std.mem.eql(u8, std.mem.trim(u8, version, " \t\r"), build_cache_version)) return null;
+    const fingerprint_line = lines.next() orelse return null;
+    const trimmed = std.mem.trim(u8, fingerprint_line, " \t\r");
+    if (trimmed.len == 0) return null;
+    return std.fmt.parseInt(u64, trimmed, 16) catch null;
+}
+
+fn writeBuildCacheFingerprint(allocator: std.mem.Allocator, dist_dir: []const u8, fingerprint: u64) !void {
+    const manifest_path = try buildCacheManifestPath(allocator, dist_dir);
+    defer allocator.free(manifest_path);
+    const text = try buildCacheFingerprintText(allocator, fingerprint);
+    defer allocator.free(text);
+    try writeAllFile(manifest_path, text);
+}
+
+fn distFilePresent(allocator: std.mem.Allocator, dist_dir: []const u8, rel_path: []const u8) !bool {
+    const path = try std.fs.path.join(allocator, &.{ dist_dir, rel_path });
+    defer allocator.free(path);
+    const stat = std.fs.cwd().statFile(path) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
+    };
+    return stat.kind == .file and stat.size != 0;
+}
+
+fn buildOutputsPresent(allocator: std.mem.Allocator, dist_dir: []const u8, options: BuildOptions) !bool {
+    if (!try distFilePresent(allocator, dist_dir, "app.wasm")) return false;
+    if (!try distFilePresent(allocator, dist_dir, "app.sa")) return false;
+    if (!try distFilePresent(allocator, dist_dir, "airlock.js")) return false;
+    if (!try distFilePresent(allocator, dist_dir, "index.html")) return false;
+    if (options.css) |css_path| {
+        if (!try distFilePresent(allocator, dist_dir, std.fs.path.basename(css_path))) return false;
+    }
+    return true;
+}
+
+fn checkBuildCache(
+    allocator: std.mem.Allocator,
+    entry_sax: []const u8,
+    dist_dir: []const u8,
+    watch_root: []const u8,
+    options: BuildOptions,
+) !struct { status: BuildCacheStatus, fingerprint: u64 } {
+    const fingerprint = try buildFingerprint(allocator, entry_sax, watch_root, options);
+    const cached = try readBuildCacheFingerprint(allocator, dist_dir);
+    if (cached != null and cached.? == fingerprint and try buildOutputsPresent(allocator, dist_dir, options)) {
+        return .{ .status = .hit, .fingerprint = fingerprint };
+    }
+    return .{ .status = .miss, .fingerprint = fingerprint };
+}
+
+fn refreshBuildCacheHitAssets(allocator: std.mem.Allocator, dist_dir: []const u8, options: BuildOptions, stderr: anytype) !u8 {
+    if (options.public_dir) |public_dir| {
+        copyPublicDir(allocator, public_dir, "", dist_dir) catch |err| {
+            try stderr.print("error: failed to copy public dir {s}: {}\n", .{ public_dir, err });
+            return 1;
+        };
+    }
+    if (options.css) |css_path| {
+        const css_target = try std.fs.path.join(allocator, &.{ dist_dir, std.fs.path.basename(css_path) });
+        defer allocator.free(css_target);
+        copyFileTo(allocator, css_path, css_target) catch |err| {
+            try stderr.print("error: failed to copy css {s}: {}\n", .{ css_path, err });
+            return 1;
+        };
+    }
+    return 0;
+}
+
 fn applyHtmlOptions(allocator: std.mem.Allocator, html: []const u8, options: BuildOptions) ![]u8 {
     var current = try allocator.dupe(u8, html);
     errdefer allocator.free(current);
@@ -179,7 +386,7 @@ fn sourceFingerprint(allocator: std.mem.Allocator, entry_sax: []const u8, watch_
         for (options.includes) |include_file| {
             const include_path = try react_api.resolveIncludePath(allocator, entry_sax, include_file);
             defer allocator.free(include_path);
-            const include_fp = try watch.fingerprintFile(include_path);
+            const include_fp = try watch.fingerprintFile(allocator, include_path);
             std.mem.writeInt(u64, &buf, include_fp, .little);
             hasher.update(&buf);
         }
@@ -194,7 +401,7 @@ fn devFingerprint(allocator: std.mem.Allocator, entry_sax: []const u8, watch_roo
     };
 
     if (options.css) |css_path| {
-        out.css = try watch.fingerprintFile(css_path);
+        out.css = try watch.fingerprintFile(allocator, css_path);
     }
 
     if (options.public_dir) |public_dir| {
@@ -545,7 +752,32 @@ pub fn runBuild(
     const dist_dir = if (dist_dir_opt) |dir| try allocator.dupe(u8, dir) else try defaultDistDir(allocator, entry_sax);
     defer allocator.free(dist_dir);
     try std.fs.cwd().makePath(dist_dir);
-    return try buildOnce(allocator, entry_sax, dist_dir, false, options, stdout, stderr);
+
+    const watch_root = try sourceDirAbs(allocator, entry_sax);
+    defer allocator.free(watch_root);
+    const cache = checkBuildCache(allocator, entry_sax, dist_dir, watch_root, options) catch |err| blk: {
+        try stderr.print("warning: vite build cache unavailable: {}\n", .{err});
+        break :blk null;
+    };
+    if (cache) |cache_state| {
+        if (cache_state.status == .hit) {
+            const asset_code = try refreshBuildCacheHitAssets(allocator, dist_dir, options, stderr);
+            if (asset_code != 0) return asset_code;
+            try stdout.print("✓ vite build cache hit\n", .{});
+            try stdout.print("  dist: {s}\n", .{dist_dir});
+            return 0;
+        }
+    }
+
+    const code = try buildOnce(allocator, entry_sax, dist_dir, false, options, stdout, stderr);
+    if (code == 0) {
+        if (cache) |cache_state| {
+            writeBuildCacheFingerprint(allocator, dist_dir, cache_state.fingerprint) catch |err| {
+                try stderr.print("warning: failed to write vite build cache manifest: {}\n", .{err});
+            };
+        }
+    }
+    return code;
 }
 
 pub fn runDev(
@@ -740,6 +972,92 @@ test "dev fingerprint separates source css and public inputs" {
     try tmp.dir.writeFile(.{ .sub_path = "app.sax", .data = "<Component name=\"A\"><p>x</p></Component>" });
     const source_after = try devFingerprint(std.testing.allocator, entry_path, root, options);
     try std.testing.expect(public_after.source != source_after.source);
+}
+
+test "build cache manifest and required outputs are validated" {
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const dist_dir = try std.fs.path.join(std.testing.allocator, &.{ root, "dist" });
+    defer std.testing.allocator.free(dist_dir);
+    try std.fs.cwd().makePath(dist_dir);
+
+    try writeBuildCacheFingerprint(std.testing.allocator, dist_dir, 0x1234);
+    try std.testing.expectEqual(@as(?u64, 0x1234), try readBuildCacheFingerprint(std.testing.allocator, dist_dir));
+    try std.testing.expect(!try buildOutputsPresent(std.testing.allocator, dist_dir, .{}));
+
+    const wasm_path = try std.fs.path.join(std.testing.allocator, &.{ dist_dir, "app.wasm" });
+    defer std.testing.allocator.free(wasm_path);
+    const sa_path = try std.fs.path.join(std.testing.allocator, &.{ dist_dir, "app.sa" });
+    defer std.testing.allocator.free(sa_path);
+    const airlock_path = try std.fs.path.join(std.testing.allocator, &.{ dist_dir, "airlock.js" });
+    defer std.testing.allocator.free(airlock_path);
+    const html_path = try std.fs.path.join(std.testing.allocator, &.{ dist_dir, "index.html" });
+    defer std.testing.allocator.free(html_path);
+    try writeAllFile(wasm_path, "wasm");
+    try writeAllFile(sa_path, "sa");
+    try writeAllFile(airlock_path, "js");
+    try writeAllFile(html_path, "html");
+    try std.testing.expect(try buildOutputsPresent(std.testing.allocator, dist_dir, .{}));
+}
+
+test "build fingerprint includes build options" {
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{ .sub_path = "app.sax", .data = "<Component name=\"A\"><div></div></Component>" });
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const entry_path = try std.fs.path.join(std.testing.allocator, &.{ root, "app.sax" });
+    defer std.testing.allocator.free(entry_path);
+
+    const first = try buildFingerprint(std.testing.allocator, entry_path, root, .{ .title = "A" });
+    const second = try buildFingerprint(std.testing.allocator, entry_path, root, .{ .title = "B" });
+    try std.testing.expect(first != second);
+}
+
+test "build fingerprint changes when explicit react include changes" {
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{ .sub_path = "app.sax", .data = "<Component name=\"A\"><div></div></Component>" });
+    try tmp.dir.writeFile(.{ .sub_path = "material.sax", .data = "<Component name=\"One\"><div></div></Component>" });
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const entry_path = try std.fs.path.join(std.testing.allocator, &.{ root, "app.sax" });
+    defer std.testing.allocator.free(entry_path);
+    const include_path = try std.fs.path.join(std.testing.allocator, &.{ root, "material.sax" });
+    defer std.testing.allocator.free(include_path);
+
+    const before = try buildFingerprint(std.testing.allocator, entry_path, root, .{ .use_react = true, .includes = &.{include_path} });
+    std.Thread.sleep(20 * std.time.ns_per_ms);
+    try tmp.dir.writeFile(.{ .sub_path = "material.sax", .data = "<Component name=\"Two\"><span></span></Component>" });
+    const after = try buildFingerprint(std.testing.allocator, entry_path, root, .{ .use_react = true, .includes = &.{include_path} });
+    try std.testing.expect(before != after);
+}
+
+test "plugin fingerprint changes for same-size content edits" {
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{ .sub_path = "libplugin.so", .data = "aaaa" });
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const plugin_path = try std.fs.path.join(std.testing.allocator, &.{ root, "libplugin.so" });
+    defer std.testing.allocator.free(plugin_path);
+
+    var before_hasher = std.hash.Wyhash.init(0x5a17_71a6_1d11_a55a);
+    try mixPluginPathFingerprint(std.testing.allocator, &before_hasher, plugin_path);
+    const before = before_hasher.final();
+
+    try tmp.dir.writeFile(.{ .sub_path = "libplugin.so", .data = "bbbb" });
+    var after_hasher = std.hash.Wyhash.init(0x5a17_71a6_1d11_a55a);
+    try mixPluginPathFingerprint(std.testing.allocator, &after_hasher, plugin_path);
+    const after = after_hasher.final();
+
+    try std.testing.expect(before != after);
 }
 
 test "dev scan interval is throttled for small debounce windows" {

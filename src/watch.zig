@@ -9,7 +9,7 @@ fn shouldSkipDir(name: []const u8) bool {
     return false;
 }
 
-fn mixFile(hasher: *std.hash.Wyhash, rel_path: []const u8, stat: std.fs.File.Stat) void {
+fn mixFile(allocator: std.mem.Allocator, hasher: *std.hash.Wyhash, rel_path: []const u8, full_path: []const u8, stat: std.fs.File.Stat) !void {
     hasher.update(rel_path);
     hasher.update("\x00");
     var buf: [16]u8 = undefined;
@@ -18,6 +18,9 @@ fn mixFile(hasher: *std.hash.Wyhash, rel_path: []const u8, stat: std.fs.File.Sta
     var size_buf: [8]u8 = undefined;
     std.mem.writeInt(u64, &size_buf, stat.size, .little);
     hasher.update(&size_buf);
+    const bytes = try std.fs.cwd().readFileAlloc(allocator, full_path, 256 * 1024 * 1024);
+    defer allocator.free(bytes);
+    hasher.update(bytes);
 }
 
 const ScanMode = enum {
@@ -56,7 +59,7 @@ fn scanDir(allocator: std.mem.Allocator, root: []const u8, rel: []const u8, hash
         const full_path = try std.fs.path.join(allocator, &.{ root, rel_path });
         defer allocator.free(full_path);
         const stat = try std.fs.cwd().statFile(full_path);
-        mixFile(hasher, rel_path, stat);
+        try mixFile(allocator, hasher, rel_path, full_path, stat);
         count.* += 1;
     }
 }
@@ -81,10 +84,10 @@ pub fn fingerprintAll(allocator: std.mem.Allocator, root: []const u8) !u64 {
     return hasher.final();
 }
 
-pub fn fingerprintFile(path: []const u8) !u64 {
+pub fn fingerprintFile(allocator: std.mem.Allocator, path: []const u8) !u64 {
     var hasher = std.hash.Wyhash.init(0x5a17_f11e_d15c_a55a);
     const stat = try std.fs.cwd().statFile(path);
-    mixFile(&hasher, path, stat);
+    try mixFile(allocator, &hasher, path, path, stat);
     return hasher.final();
 }
 
@@ -130,5 +133,21 @@ test "fingerprintAll changes for non sax edits" {
     std.Thread.sleep(1 * std.time.ns_per_ms);
     try tmp.dir.writeFile(.{ .sub_path = "style.css", .data = "body{color:red}" });
     const after = try fingerprintAll(std.testing.allocator, root);
+    try std.testing.expect(before != after);
+}
+
+test "fingerprintFile changes for same-size content edits" {
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{ .sub_path = "plugin.so", .data = "aaaa" });
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const path = try std.fs.path.join(std.testing.allocator, &.{ root, "plugin.so" });
+    defer std.testing.allocator.free(path);
+
+    const before = try fingerprintFile(std.testing.allocator, path);
+    try tmp.dir.writeFile(.{ .sub_path = "plugin.so", .data = "bbbb" });
+    const after = try fingerprintFile(std.testing.allocator, path);
     try std.testing.expect(before != after);
 }
