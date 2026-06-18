@@ -482,10 +482,12 @@ pub fn buildOnce(
 
         const wasm_path = try std.fs.path.join(allocator, &.{ dist_dir, "app.wasm" });
         defer allocator.free(wasm_path);
-        const build_code = try react_api.buildBrowserWasmFromSourceText(
+        var source_units = try react_api.sourceUnitsFromArtifacts(allocator, generated_source_path, &compiled);
+        defer react_api.freeSourceUnits(allocator, &source_units);
+
+        const build_code = try react_api.buildBrowserWasmFromSourceUnits(
             allocator,
-            generated_source_path,
-            compiled.sa_code.items,
+            source_units.items,
             wasm_path,
             false,
             .release_small,
