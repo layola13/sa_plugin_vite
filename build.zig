@@ -21,13 +21,20 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const sla_handler_bridge = b.createModule(.{
+        .root_source_file = b.path("../sa_plugin_sla/src/handler_bridge.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     sax_vite_api.addImport("build_options", build_options_module);
+    sax_vite_api.addImport("sla_handler_bridge", sla_handler_bridge);
     const react_vite_api = b.createModule(.{
         .root_source_file = b.path("../sa_plugin_react/src/vite_api.zig"),
         .target = target,
         .optimize = optimize,
     });
     react_vite_api.addImport("build_options", build_options_module);
+    react_vite_api.addImport("sla_handler_bridge", sla_handler_bridge);
     const http_vite_api = b.createModule(.{
         .root_source_file = b.path("../sa_plugin_http_server/src/vite_api.zig"),
         .target = target,
