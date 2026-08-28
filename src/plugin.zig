@@ -66,7 +66,7 @@ fn parsePort(text: []const u8) !u16 {
 }
 
 const DevArgs = struct {
-    const max_includes = 16;
+    const max_includes = 128;
 
     entry: []const u8,
     dist_dir: ?[]const u8 = null,
