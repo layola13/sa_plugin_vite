@@ -6,6 +6,10 @@ pub fn build(b: *std.Build) void {
     const llvm_include_dir = b.option([]const u8, "llvm-include-dir", "LLVM C API include directory.") orelse "/usr/lib/llvm-14/include";
     const llvm_lib_dir = b.option([]const u8, "llvm-lib-dir", "LLVM library directory.") orelse "/usr/lib/llvm-14/lib";
     const llvm_lib_name = b.option([]const u8, "llvm-lib-name", "LLVM system library name.") orelse "LLVM-14";
+    // NOTE(Zig 0.17): sci-style `-Dllvm` bootstrap switch. When false, link the
+    // local stub instead of LLVM (same C ABI, runtime "backend disabled" error).
+    const enable_llvm = b.option(bool, "llvm", "Link the LLVM-C backend (needs LLVM dev headers/lib). Use -Dllvm=false for bootstrap.") orelse true;
+    validateLlvmConfig(b, enable_llvm, llvm_include_dir, llvm_lib_dir, llvm_lib_name);
     const sa_repo_root = b.option([]const u8, "sa-repo-root", "SA repository root used to resolve sa_std imports.") orelse "/home/vscode/projects/sci";
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "repo_root", sa_repo_root);
@@ -26,8 +30,15 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const sio_module = b.createModule(.{
+        .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ "../sci", "src", "sa_io.zig" }) },
+        .target = target,
+        .optimize = optimize,
+    });
     sax_vite_api.addImport("build_options", build_options_module);
     sax_vite_api.addImport("sla_handler_bridge", sla_handler_bridge);
+    sax_vite_api.addImport("sio", sio_module);
+    sla_handler_bridge.addImport("sio", sio_module);
     const react_vite_api = b.createModule(.{
         .root_source_file = b.path("../sa_plugin_react/src/vite_api.zig"),
         .target = target,
@@ -35,10 +46,12 @@ pub fn build(b: *std.Build) void {
     });
     react_vite_api.addImport("build_options", build_options_module);
     react_vite_api.addImport("sla_handler_bridge", sla_handler_bridge);
+    react_vite_api.addImport("sio", sio_module);
     const http_vite_api = b.createModule(.{
         .root_source_file = b.path("../sa_plugin_http_server/src/vite_api.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
     const root_module = b.createModule(.{
         .root_source_file = b.path("src/plugin.zig"),
@@ -50,9 +63,9 @@ pub fn build(b: *std.Build) void {
     root_module.addImport("sax_vite_api", sax_vite_api);
     root_module.addImport("react_vite_api", react_vite_api);
     root_module.addImport("http_vite_api", http_vite_api);
+    root_module.addImport("sio", sio_module);
     root_module.addImport("build_options", build_options_module);
-    addLlvmcShimToModule(b, root_module);
-    linkLLVMToModule(root_module, llvm_include_dir, llvm_lib_dir, llvm_lib_name);
+    addLlvmcSupportToModule(b, root_module, enable_llvm, llvm_include_dir, llvm_lib_dir, llvm_lib_name);
 
     const lib = b.addLibrary(.{
         .name = "vite",
@@ -68,6 +81,61 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run plugin tests");
     test_step.dependOn(&run_tests.step);
     test_step.dependOn(b.getInstallStep());
+}
+
+fn addLlvmcSupportToModule(
+    b: *std.Build,
+    module: *std.Build.Module,
+    enable_llvm: bool,
+    include_dir: []const u8,
+    lib_dir: []const u8,
+    lib_name: []const u8,
+) void {
+    if (enable_llvm) {
+        module.addCSourceFile(.{ .file = b.path("../sa_plugin_sax/src/emit_llvm_llvmc_shim.c"), .flags = &.{} });
+        linkLLVMToModule(module, include_dir, lib_dir, lib_name);
+    } else {
+        module.addCSourceFile(.{ .file = b.path("src/emit_llvm_llvmc_stub.c"), .flags = &.{"-fno-sanitize=all"} });
+    }
+}
+
+fn pathExists(io: std.Io, path: []const u8) bool {
+    if (std.fs.path.isAbsolute(path)) {
+        std.Io.Dir.accessAbsolute(io, path, .{}) catch return false;
+    } else {
+        std.Io.Dir.cwd().access(io, path, .{}) catch return false;
+    }
+    return true;
+}
+
+fn validateLlvmConfig(b: *std.Build, enable_llvm: bool, include_dir: []const u8, lib_dir: []const u8, lib_name: []const u8) void {
+    if (!enable_llvm) return;
+    const io = b.graph.io;
+    const core_header = std.fs.path.join(b.allocator, &.{ include_dir, "llvm-c", "Core.h" }) catch
+        failLlvmConfig("failed to construct LLVM include path", .{});
+    defer b.allocator.free(core_header);
+    if (!pathExists(io, core_header)) {
+        failLlvmConfig("LLVM-C header not found: {s}\n  pass -Dllvm-include-dir=<path> or use -Dllvm=false for bootstrap", .{core_header});
+    }
+    if (!pathExists(io, lib_dir)) {
+        failLlvmConfig("LLVM library directory not found: {s}\n  pass -Dllvm-lib-dir=<path> or use -Dllvm=false for bootstrap", .{lib_dir});
+    }
+    const candidates = [_][]const u8{
+        lib_name,
+        b.fmt("lib{s}.so", .{lib_name}),
+        b.fmt("lib{s}.a", .{lib_name}),
+    };
+    for (candidates) |candidate| {
+        const p = std.fs.path.join(b.allocator, &.{ lib_dir, candidate }) catch continue;
+        defer b.allocator.free(p);
+        if (pathExists(io, p)) return;
+    }
+    failLlvmConfig("LLVM library not found in {s} for -Dllvm-lib-name={s}\n  pass explicit LLVM paths or use -Dllvm=false for bootstrap", .{ lib_dir, lib_name });
+}
+
+fn failLlvmConfig(comptime fmt: []const u8, args: anytype) noreturn {
+    std.debug.print("error: LLVM-C backend configuration failed\n  " ++ fmt ++ "\n", args);
+    std.process.exit(1);
 }
 
 fn addLlvmcShimToModule(b: *std.Build, module: *std.Build.Module) void {

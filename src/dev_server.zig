@@ -1,4 +1,5 @@
 const std = @import("std");
+const sio = @import("sio");
 const build_config = @import("build_options");
 const sax_api = @import("sax_vite_api");
 const sax_build = sax_api.build;
@@ -85,24 +86,24 @@ fn sourceDir(path: []const u8) []const u8 {
 }
 
 fn sourceDirAbs(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    return try std.fs.cwd().realpathAlloc(allocator, sourceDir(path));
+    return try sio.cwd().realpathAlloc(allocator, sourceDir(path));
 }
 
 fn ensureParentDir(path: []const u8) !void {
     if (std.fs.path.dirname(path)) |dir| {
-        if (dir.len != 0) try std.fs.cwd().makePath(dir);
+        if (dir.len != 0) try sio.cwd().makePath(dir);
     }
 }
 
 fn writeAllFile(path: []const u8, bytes: []const u8) !void {
     try ensureParentDir(path);
-    var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+    var file = try sio.cwd().createFile(path, .{ .truncate = true });
     defer file.close();
     try file.writeAll(bytes);
 }
 
 fn copyFileTo(allocator: std.mem.Allocator, src_path: []const u8, dst_path: []const u8) !void {
-    const bytes = try std.fs.cwd().readFileAlloc(allocator, src_path, 64 * 1024 * 1024);
+    const bytes = try sio.cwd().readFileAlloc(allocator, src_path, 64 * 1024 * 1024);
     defer allocator.free(bytes);
     try writeAllFile(dst_path, bytes);
 }
@@ -111,7 +112,7 @@ fn copyPublicDir(allocator: std.mem.Allocator, src_root: []const u8, rel: []cons
     const dir_path = if (rel.len == 0) try allocator.dupe(u8, src_root) else try std.fs.path.join(allocator, &.{ src_root, rel });
     defer allocator.free(dir_path);
 
-    var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
+    var dir = try sio.cwd().openDir(dir_path, .{ .iterate = true });
     defer dir.close();
 
     var it = dir.iterate();
@@ -205,7 +206,7 @@ fn mixSaStdFingerprint(allocator: std.mem.Allocator, hasher: *std.hash.Wyhash) !
 
 fn mixPluginPathFingerprint(allocator: std.mem.Allocator, hasher: *std.hash.Wyhash, path: []const u8) !void {
     mixBytes(hasher, path);
-    const stat = std.fs.cwd().statFile(path) catch |err| {
+    const stat = sio.cwd().statFile(path) catch |err| {
         mixBool(hasher, false);
         mixBytes(hasher, @errorName(err));
         return;
@@ -220,7 +221,7 @@ fn mixPluginPathFingerprint(allocator: std.mem.Allocator, hasher: *std.hash.Wyha
             return;
         }
     else
-        std.fs.cwd().openFile(path, .{}) catch |err| {
+        sio.cwd().openFile(path, .{}) catch |err| {
             mixBool(hasher, false);
             mixBytes(hasher, @errorName(err));
             return;
@@ -278,7 +279,7 @@ fn readBuildCacheFingerprint(allocator: std.mem.Allocator, dist_dir: []const u8)
     const manifest_path = try buildCacheManifestPath(allocator, dist_dir);
     defer allocator.free(manifest_path);
 
-    const bytes = std.fs.cwd().readFileAlloc(allocator, manifest_path, 4096) catch |err| switch (err) {
+    const bytes = sio.cwd().readFileAlloc(allocator, manifest_path, 4096) catch |err| switch (err) {
         error.FileNotFound => return null,
         else => return err,
     };
@@ -304,7 +305,7 @@ fn writeBuildCacheFingerprint(allocator: std.mem.Allocator, dist_dir: []const u8
 fn distFilePresent(allocator: std.mem.Allocator, dist_dir: []const u8, rel_path: []const u8) !bool {
     const path = try std.fs.path.join(allocator, &.{ dist_dir, rel_path });
     defer allocator.free(path);
-    const stat = std.fs.cwd().statFile(path) catch |err| switch (err) {
+    const stat = sio.cwd().statFile(path) catch |err| switch (err) {
         error.FileNotFound => return false,
         else => return err,
     };
@@ -453,7 +454,7 @@ fn refreshAssetsOnly(
 }
 
 fn readSource(allocator: std.mem.Allocator, sax_file: []const u8, stderr: anytype) ![]u8 {
-    return std.fs.cwd().readFileAlloc(allocator, sax_file, 16 * 1024 * 1024) catch |err| {
+    return sio.cwd().readFileAlloc(allocator, sax_file, 16 * 1024 * 1024) catch |err| {
         try stderr.print("error: failed to read {s}: {}\n", .{ sax_file, err });
         return error.ReadFailed;
     };
@@ -663,7 +664,7 @@ fn serveStaticFile(allocator: std.mem.Allocator, request: *http_api.HttpRequest,
     defer allocator.free(relative);
     const full_path = try std.fs.path.join(allocator, &.{ dist_dir, relative });
     defer allocator.free(full_path);
-    const body = std.fs.cwd().readFileAlloc(allocator, full_path, 32 * 1024 * 1024) catch |err| switch (err) {
+    const body = sio.cwd().readFileAlloc(allocator, full_path, 32 * 1024 * 1024) catch |err| switch (err) {
         error.FileNotFound => {
             try sendResponse(request, .not_found, "text/plain", "not found\n");
             return;
@@ -671,7 +672,7 @@ fn serveStaticFile(allocator: std.mem.Allocator, request: *http_api.HttpRequest,
         error.IsDir => {
             const index_path = try std.fs.path.join(allocator, &.{ full_path, "index.html" });
             defer allocator.free(index_path);
-            const index_body = std.fs.cwd().readFileAlloc(allocator, index_path, 32 * 1024 * 1024) catch |index_err| switch (index_err) {
+            const index_body = sio.cwd().readFileAlloc(allocator, index_path, 32 * 1024 * 1024) catch |index_err| switch (index_err) {
                 error.FileNotFound => {
                     try sendResponse(request, .not_found, "text/plain", "not found\n");
                     return;
@@ -753,7 +754,7 @@ pub fn runBuild(
 ) !u8 {
     const dist_dir = if (dist_dir_opt) |dir| try allocator.dupe(u8, dir) else try defaultDistDir(allocator, entry_sax);
     defer allocator.free(dist_dir);
-    try std.fs.cwd().makePath(dist_dir);
+    try sio.cwd().makePath(dist_dir);
 
     const watch_root = try sourceDirAbs(allocator, entry_sax);
     defer allocator.free(watch_root);
@@ -790,7 +791,7 @@ pub fn runDev(
 ) !u8 {
     const dist_dir = if (options.dist_dir) |dir| try allocator.dupe(u8, dir) else try defaultDistDir(allocator, options.entry_sax);
     defer allocator.free(dist_dir);
-    try std.fs.cwd().makePath(dist_dir);
+    try sio.cwd().makePath(dist_dir);
 
     const build_options = BuildOptions{ .use_react = options.use_react, .includes = options.includes, .title = options.title, .css = options.css, .public_dir = options.public_dir };
 
@@ -984,7 +985,7 @@ test "build cache manifest and required outputs are validated" {
     defer std.testing.allocator.free(root);
     const dist_dir = try std.fs.path.join(std.testing.allocator, &.{ root, "dist" });
     defer std.testing.allocator.free(dist_dir);
-    try std.fs.cwd().makePath(dist_dir);
+    try sio.cwd().makePath(dist_dir);
 
     try writeBuildCacheFingerprint(std.testing.allocator, dist_dir, 0x1234);
     try std.testing.expectEqual(@as(?u64, 0x1234), try readBuildCacheFingerprint(std.testing.allocator, dist_dir));

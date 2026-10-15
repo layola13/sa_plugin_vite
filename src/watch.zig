@@ -1,4 +1,5 @@
 const std = @import("std");
+const sio = @import("sio");
 
 const skip_dirs = [_][]const u8{ ".git", ".zig-cache", "zig-out", "dist", "node_modules" };
 
@@ -9,16 +10,16 @@ fn shouldSkipDir(name: []const u8) bool {
     return false;
 }
 
-fn mixFile(allocator: std.mem.Allocator, hasher: *std.hash.Wyhash, rel_path: []const u8, full_path: []const u8, stat: std.fs.File.Stat) !void {
+fn mixFile(allocator: std.mem.Allocator, hasher: *std.hash.Wyhash, rel_path: []const u8, full_path: []const u8, stat: sio.Stat) !void {
     hasher.update(rel_path);
     hasher.update("\x00");
     var buf: [16]u8 = undefined;
-    std.mem.writeInt(i128, &buf, stat.mtime, .little);
+    std.mem.writeInt(i128, &buf, @as(i128, stat.mtime.nanoseconds), .little);
     hasher.update(&buf);
     var size_buf: [8]u8 = undefined;
     std.mem.writeInt(u64, &size_buf, stat.size, .little);
     hasher.update(&size_buf);
-    const bytes = try std.fs.cwd().readFileAlloc(allocator, full_path, 256 * 1024 * 1024);
+    const bytes = try sio.cwd().readFileAlloc(allocator, full_path, 256 * 1024 * 1024);
     defer allocator.free(bytes);
     hasher.update(bytes);
 }
@@ -39,7 +40,7 @@ fn scanDir(allocator: std.mem.Allocator, root: []const u8, rel: []const u8, hash
     const dir_path = if (rel.len == 0) try allocator.dupe(u8, root) else try std.fs.path.join(allocator, &.{ root, rel });
     defer allocator.free(dir_path);
 
-    var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
+    var dir = try sio.cwd().openDir(dir_path, .{ .iterate = true });
     defer dir.close();
 
     var it = dir.iterate();
@@ -58,7 +59,7 @@ fn scanDir(allocator: std.mem.Allocator, root: []const u8, rel: []const u8, hash
         defer allocator.free(rel_path);
         const full_path = try std.fs.path.join(allocator, &.{ root, rel_path });
         defer allocator.free(full_path);
-        const stat = try std.fs.cwd().statFile(full_path);
+        const stat = try sio.cwd().statFile(full_path);
         try mixFile(allocator, hasher, rel_path, full_path, stat);
         count.* += 1;
     }
@@ -86,7 +87,7 @@ pub fn fingerprintAll(allocator: std.mem.Allocator, root: []const u8) !u64 {
 
 pub fn fingerprintFile(allocator: std.mem.Allocator, path: []const u8) !u64 {
     var hasher = std.hash.Wyhash.init(0x5a17_f11e_d15c_a55a);
-    const stat = try std.fs.cwd().statFile(path);
+    const stat = try sio.cwd().statFile(path);
     try mixFile(allocator, &hasher, path, path, stat);
     return hasher.final();
 }
