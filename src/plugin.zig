@@ -1,7 +1,16 @@
 const std = @import("std");
 const plugin_api = @import("plugin_api");
 const dev_server = @import("dev_server.zig");
-pub usingnamespace @import("vite_saasm_api.zig");
+const _api = @import("vite_saasm_api.zig");
+// NOTE(Zig 0.17): usingnamespace removed.
+pub const sa_vite_dev_new = _api.sa_vite_dev_new;
+pub const sa_vite_dev_set_entry = _api.sa_vite_dev_set_entry;
+pub const sa_vite_dev_set_out_dir = _api.sa_vite_dev_set_out_dir;
+pub const sa_vite_dev_set_port = _api.sa_vite_dev_set_port;
+pub const sa_vite_dev_set_debounce_ms = _api.sa_vite_dev_set_debounce_ms;
+pub const sa_vite_dev_run = _api.sa_vite_dev_run;
+pub const sa_vite_dev_stop = _api.sa_vite_dev_stop;
+pub const sa_vite_dev_free = _api.sa_vite_dev_free;
 
 const skills = [_]plugin_api.SkillSection{
     .{
@@ -20,17 +29,43 @@ const skills = [_]plugin_api.SkillSection{
 
 const StreamCtx = struct {
     stream: plugin_api.HostStream,
+    io_writer: std.Io.Writer = .{ .buffer = &.{}, .end = 0, .vtable = &vtable },
+    storage: [8192]u8 = std.mem.zeroes([8192]u8),
+
+    const vtable: std.Io.Writer.VTable = .{ .drain = drain };
+
+    fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+        const self: *StreamCtx = @fieldParentPtr("io_writer", w);
+        const write_all = self.stream.write_all orelse return error.WriteFailed;
+        const ctx = self.stream.ctx;
+        if (w.end != 0) {
+            if (write_all(ctx, w.buffer[0..w.end].ptr, w.end) != @intFromEnum(plugin_api.AbiStatus.ok)) return error.WriteFailed;
+            w.end = 0;
+        }
+        var total: usize = 0;
+        for (data, 0..) |slice, i| {
+            const reps: usize = if (i == data.len - 1) splat else 1;
+            var r: usize = 0;
+            while (r < reps) : (r += 1) {
+                if (slice.len == 0) continue;
+                if (write_all(ctx, slice.ptr, slice.len) != @intFromEnum(plugin_api.AbiStatus.ok)) return error.WriteFailed;
+                total += slice.len;
+            }
+        }
+        return total;
+    }
 };
 
 const CaptureCtx = struct {
-    buffer: *std.ArrayList(u8),
+    buffer: *std.array_list.Managed(u8),
 };
 
-fn writeAll(ctx: *const anyopaque, bytes: []const u8) anyerror!usize {
-    const self = @as(*const StreamCtx, @ptrCast(@alignCast(ctx)));
-    const write_all = self.stream.write_all orelse return error.WriteFailed;
-    if (write_all(self.stream.ctx, bytes.ptr, bytes.len) != @intFromEnum(plugin_api.AbiStatus.ok)) return error.WriteFailed;
-    return bytes.len;
+fn makeStreamWriter(stream: plugin_api.HostStream, storage: *StreamCtx) ?*std.Io.Writer {
+    if (stream.write_all == null or stream.ctx == null) return null;
+    storage.* = .{ .stream = stream };
+    storage.io_writer.buffer = &storage.storage;
+    storage.io_writer.end = 0;
+    return &storage.io_writer;
 }
 
 fn captureWriteAll(ctx: ?*anyopaque, bytes: [*]const u8, len: usize) callconv(.c) u32 {
@@ -52,7 +87,7 @@ fn cArgvToSlice(argv: []const [*:0]const u8, allocator: std.mem.Allocator) ![]co
     return out;
 }
 
-fn writeUsage(writer: std.io.AnyWriter) !void {
+fn writeUsage(writer: *std.Io.Writer) !void {
     try writer.writeAll(
         \\usage: sa vite <dev|build|preview> [args...]\n
         \\  sa vite dev <entry.sax> [--react] [--include <file.sax>] [--out-dir <dir>] [--port <port>] [--debounce-ms <ms>] [--title <title>] [--css <file>] [--public-dir <dir>]\n
@@ -149,7 +184,7 @@ fn parsePreviewArgs(argv: []const []const u8, start: usize) !dev_server.PreviewO
     return out;
 }
 
-fn writeCliError(writer: std.io.AnyWriter, err: anyerror, subcommand: []const u8) !void {
+fn writeCliError(writer: *std.Io.Writer, err: anyerror, subcommand: []const u8) !void {
     const message = switch (err) {
         error.MissingEntry => "missing entry .sax file",
         error.MissingOptionValue => "missing option value",
@@ -169,7 +204,7 @@ fn writeCliError(writer: std.io.AnyWriter, err: anyerror, subcommand: []const u8
     }
 }
 
-fn runViteCommand(ctx: *const plugin_api.Context, argv: []const []const u8, stdout: std.io.AnyWriter, stderr: std.io.AnyWriter) anyerror!?u8 {
+fn runViteCommand(ctx: *const plugin_api.Context, argv: []const []const u8, stdout: *std.Io.Writer, stderr: *std.Io.Writer) anyerror!?u8 {
     if (argv.len < 2 or !std.mem.eql(u8, argv[1], "vite")) return null;
     if (argv.len < 3) {
         try writeUsage(stderr);
@@ -225,10 +260,10 @@ fn runViteCommandAbi(ctx: *const plugin_api.Context, argv: [*]const [*:0]const u
     const allocator = std.heap.page_allocator;
     var local_ctx = ctx.*;
     local_ctx.allocator = allocator;
-    var stdout_ctx = StreamCtx{ .stream = stdout };
-    var stderr_ctx = StreamCtx{ .stream = stderr };
-    const stdout_writer = std.io.AnyWriter{ .context = &stdout_ctx, .writeFn = writeAll };
-    const stderr_writer = std.io.AnyWriter{ .context = &stderr_ctx, .writeFn = writeAll };
+    var stdout_ctx: StreamCtx = undefined;
+    var stderr_ctx: StreamCtx = undefined;
+    const stdout_writer = makeStreamWriter(stdout, &stdout_ctx) orelse return @intFromEnum(plugin_api.AbiStatus.failed);
+    const stderr_writer = makeStreamWriter(stderr, &stderr_ctx) orelse return @intFromEnum(plugin_api.AbiStatus.failed);
     const args = cArgvToSlice(argv[0..argv_len], allocator) catch return @intFromEnum(plugin_api.AbiStatus.failed);
     defer allocator.free(args);
 
@@ -270,9 +305,9 @@ test "vite plugin exports runtime descriptor and skills" {
 }
 
 test "vite command validates missing entry" {
-    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
     var stdout_ctx = CaptureCtx{ .buffer = &stdout_buf };
     var stderr_ctx = CaptureCtx{ .buffer = &stderr_buf };
