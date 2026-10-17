@@ -720,7 +720,7 @@ fn sseClientThread(request: *http_api.HttpRequest, build_version: *std.atomic.Va
             last = current;
             writeSseEvent(response, current, build_error.load(.seq_cst)) catch return;
         }
-        std.Thread.sleep(100 * ns_per_ms);
+        std.Io.sleep(sio.io(), .fromNanoseconds(100 * ns_per_ms), .awake) catch {};
     }
 }
 
@@ -868,7 +868,7 @@ fn serveLoop(
 
     var server = try http_api.HttpServer.init(allocator);
     defer server.deinit();
-    try server.startWithOptions("127.0.0.1", port, .{ .reuse_address = true, .force_nonblocking = true });
+    try server.startWithOptions("127.0.0.1", port, .{ .reuse_address = true });
     try stdout.print("✓ vite {s} server listening on http://127.0.0.1:{d}\n", .{ @tagName(mode), port });
 
     const scan_interval_ms = devScanIntervalMs(debounce_ms, build_options.public_dir != null);
@@ -879,19 +879,19 @@ fn serveLoop(
         }
 
         if (mode == .dev) {
-            const now_ns = std.time.nanoTimestamp();
+            const now_ns = sio.nanoTimestamp();
             if (now_ns >= next_scan_ns) {
                 next_scan_ns = now_ns + @as(i128, @intCast(scan_interval_ms * ns_per_ms));
                 const path = entry_sax.?;
                 const current_fingerprint = devFingerprint(allocator, path, watch_root.?, build_options) catch |err| {
                     try stderr.print("error: failed to scan dev inputs under {s}: {}\n", .{ watch_root.?, err });
-                    std.Thread.sleep(100 * ns_per_ms);
+                    std.Io.sleep(sio.io(), .fromNanoseconds(100 * ns_per_ms), .awake) catch {};
                     continue;
                 };
                 if (last_fingerprint == null) {
                     last_fingerprint = current_fingerprint;
                 } else if (!current_fingerprint.eql(last_fingerprint.?)) {
-                    std.Thread.sleep(debounce_ms * ns_per_ms);
+                    std.Io.sleep(sio.io(), .fromNanoseconds(debounce_ms * ns_per_ms), .awake) catch {};
                     const previous_fingerprint = last_fingerprint.?;
                     const debounced_fingerprint = devFingerprint(allocator, path, watch_root.?, build_options) catch current_fingerprint;
                     last_fingerprint = debounced_fingerprint;
@@ -916,12 +916,12 @@ fn serveLoop(
 
         const request = server.accept() catch |err| {
             if (err == error.WouldBlock) {
-                std.Thread.sleep(50 * ns_per_ms);
+                std.Io.sleep(sio.io(), .fromNanoseconds(50 * ns_per_ms), .awake) catch {};
                 continue;
             }
             if (isTransientAcceptError(err)) continue;
             try stderr.print("error: vite accept failed: {}\n", .{err});
-            std.Thread.sleep(50 * ns_per_ms);
+            std.Io.sleep(sio.io(), .fromNanoseconds(50 * ns_per_ms), .awake) catch {};
             continue;
         };
         handleRequest(state, request) catch |err| switch (err) {

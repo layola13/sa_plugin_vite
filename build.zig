@@ -53,6 +53,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    http_vite_api.addImport("sio", sio_module);
     const root_module = b.createModule(.{
         .root_source_file = b.path("src/plugin.zig"),
         .target = target,
