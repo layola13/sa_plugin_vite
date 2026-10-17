@@ -95,14 +95,15 @@ pub fn fingerprintFile(allocator: std.mem.Allocator, path: []const u8) !u64 {
 test "fingerprint changes for sax edits" {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    try tmp.dir.writeFile(.{ .sub_path = "app.sax", .data = "<Component name=\"A\"><div></div></Component>" });
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try tdir.writeFile(.{ .sub_path = "app.sax", .data = "<Component name=\"A\"><div></div></Component>" });
+    const root = try tdir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root);
 
     const before = try fingerprint(std.testing.allocator, root);
-    std.Thread.sleep(1 * std.time.ns_per_ms);
-    try tmp.dir.writeFile(.{ .sub_path = "app.sax", .data = "<Component name=\"A\"><p>x</p></Component>" });
+    sio.io().sleep(.fromNanoseconds(1 * std.time.ns_per_ms), .awake) catch {};
+    try tdir.writeFile(.{ .sub_path = "app.sax", .data = "<Component name=\"A\"><p>x</p></Component>" });
     const after = try fingerprint(std.testing.allocator, root);
     try std.testing.expect(before != after);
 }
@@ -110,14 +111,15 @@ test "fingerprint changes for sax edits" {
 test "fingerprint includes nested sax files" {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    try tmp.dir.makePath("components");
-    try tmp.dir.writeFile(.{ .sub_path = "app.sax", .data = "<Component name=\"A\"><div></div></Component>" });
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try tdir.makePath("components");
+    try tdir.writeFile(.{ .sub_path = "app.sax", .data = "<Component name=\"A\"><div></div></Component>" });
+    const root = try tdir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root);
 
     const before = try fingerprint(std.testing.allocator, root);
-    try tmp.dir.writeFile(.{ .sub_path = "components/child.sax", .data = "<Component name=\"B\"><div></div></Component>" });
+    try tdir.writeFile(.{ .sub_path = "components/child.sax", .data = "<Component name=\"B\"><div></div></Component>" });
     const after = try fingerprint(std.testing.allocator, root);
     try std.testing.expect(before != after);
 }
@@ -125,14 +127,15 @@ test "fingerprint includes nested sax files" {
 test "fingerprintAll changes for non sax edits" {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    try tmp.dir.writeFile(.{ .sub_path = "style.css", .data = "body{}" });
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try tdir.writeFile(.{ .sub_path = "style.css", .data = "body{}" });
+    const root = try tdir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root);
 
     const before = try fingerprintAll(std.testing.allocator, root);
-    std.Thread.sleep(1 * std.time.ns_per_ms);
-    try tmp.dir.writeFile(.{ .sub_path = "style.css", .data = "body{color:red}" });
+    sio.io().sleep(.fromNanoseconds(1 * std.time.ns_per_ms), .awake) catch {};
+    try tdir.writeFile(.{ .sub_path = "style.css", .data = "body{color:red}" });
     const after = try fingerprintAll(std.testing.allocator, root);
     try std.testing.expect(before != after);
 }
@@ -140,15 +143,16 @@ test "fingerprintAll changes for non sax edits" {
 test "fingerprintFile changes for same-size content edits" {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    try tmp.dir.writeFile(.{ .sub_path = "plugin.so", .data = "aaaa" });
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try tdir.writeFile(.{ .sub_path = "plugin.so", .data = "aaaa" });
+    const root = try tdir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root);
     const path = try std.fs.path.join(std.testing.allocator, &.{ root, "plugin.so" });
     defer std.testing.allocator.free(path);
 
     const before = try fingerprintFile(std.testing.allocator, path);
-    try tmp.dir.writeFile(.{ .sub_path = "plugin.so", .data = "bbbb" });
+    try tdir.writeFile(.{ .sub_path = "plugin.so", .data = "bbbb" });
     const after = try fingerprintFile(std.testing.allocator, path);
     try std.testing.expect(before != after);
 }

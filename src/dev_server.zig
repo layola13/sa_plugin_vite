@@ -163,7 +163,11 @@ fn mixU64(hasher: *std.hash.Wyhash, value: u64) void {
     hasher.update(&buf);
 }
 
-fn mixI128(hasher: *std.hash.Wyhash, value: i128) void {
+fn mixI128(hasher: *std.hash.Wyhash, value: std.Io.Timestamp) void {
+    mixI128Raw(hasher, value.nanoseconds);
+}
+
+fn mixI128Raw(hasher: *std.hash.Wyhash, value: i128) void {
     var buf: [16]u8 = undefined;
     std.mem.writeInt(i128, &buf, value, .little);
     hasher.update(&buf);
@@ -215,7 +219,7 @@ fn mixPluginPathFingerprint(allocator: std.mem.Allocator, hasher: *std.hash.Wyha
     mixU64(hasher, stat.size);
     mixI128(hasher, stat.mtime);
     var file = if (std.fs.path.isAbsolute(path))
-        std.fs.openFileAbsolute(path, .{}) catch |err| {
+        sio.openFileAbsolute(path, .{}) catch |err| {
             mixBool(hasher, false);
             mixBytes(hasher, @errorName(err));
             return;
@@ -234,7 +238,7 @@ fn mixPluginPathFingerprint(allocator: std.mem.Allocator, hasher: *std.hash.Wyha
 }
 
 fn mixPluginEnvironmentFingerprint(allocator: std.mem.Allocator, hasher: *std.hash.Wyhash) !void {
-    const value = std.process.getEnvVarOwned(allocator, "SA_PLUGINS_PATH") catch |err| switch (err) {
+    const value = sio.getEnvVarOwned(allocator, "SA_PLUGINS_PATH") catch |err| switch (err) {
         error.EnvironmentVariableNotFound => {
             mixBool(hasher, false);
             return;
@@ -939,13 +943,14 @@ test "static relative path rejects traversal" {
 test "dev fingerprint separates source css and public inputs" {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    try tmp.dir.writeFile(.{ .sub_path = "app.sax", .data = "<Component name=\"A\"><div></div></Component>" });
-    try tmp.dir.writeFile(.{ .sub_path = "style.css", .data = "body{color:#111}" });
-    try tmp.dir.makePath("public");
-    try tmp.dir.writeFile(.{ .sub_path = "public/info.txt", .data = "asset-a" });
+    try tdir.writeFile(.{ .sub_path = "app.sax", .data = "<Component name=\"A\"><div></div></Component>" });
+    try tdir.writeFile(.{ .sub_path = "style.css", .data = "body{color:#111}" });
+    try tdir.makePath("public");
+    try tdir.writeFile(.{ .sub_path = "public/info.txt", .data = "asset-a" });
 
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tdir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root);
     const entry_path = try std.fs.path.join(std.testing.allocator, &.{ root, "app.sax" });
     defer std.testing.allocator.free(entry_path);
@@ -957,22 +962,22 @@ test "dev fingerprint separates source css and public inputs" {
     const options = BuildOptions{ .css = css_path, .public_dir = public_dir };
     const before = try devFingerprint(std.testing.allocator, entry_path, root, options);
 
-    std.Thread.sleep(20 * std.time.ns_per_ms);
-    try tmp.dir.writeFile(.{ .sub_path = "style.css", .data = "body{color:#222;background:#fff}" });
+    sio.io().sleep(.fromNanoseconds(20 * std.time.ns_per_ms), .awake) catch {};
+    try tdir.writeFile(.{ .sub_path = "style.css", .data = "body{color:#222;background:#fff}" });
     const css_after = try devFingerprint(std.testing.allocator, entry_path, root, options);
     try std.testing.expectEqual(before.source, css_after.source);
     try std.testing.expect(before.css != css_after.css);
     try std.testing.expectEqual(before.public, css_after.public);
 
-    std.Thread.sleep(20 * std.time.ns_per_ms);
-    try tmp.dir.writeFile(.{ .sub_path = "public/info.txt", .data = "asset-b-updated" });
+    sio.io().sleep(.fromNanoseconds(20 * std.time.ns_per_ms), .awake) catch {};
+    try tdir.writeFile(.{ .sub_path = "public/info.txt", .data = "asset-b-updated" });
     const public_after = try devFingerprint(std.testing.allocator, entry_path, root, options);
     try std.testing.expectEqual(css_after.source, public_after.source);
     try std.testing.expectEqual(css_after.css, public_after.css);
     try std.testing.expect(css_after.public != public_after.public);
 
-    std.Thread.sleep(20 * std.time.ns_per_ms);
-    try tmp.dir.writeFile(.{ .sub_path = "app.sax", .data = "<Component name=\"A\"><p>x</p></Component>" });
+    sio.io().sleep(.fromNanoseconds(20 * std.time.ns_per_ms), .awake) catch {};
+    try tdir.writeFile(.{ .sub_path = "app.sax", .data = "<Component name=\"A\"><p>x</p></Component>" });
     const source_after = try devFingerprint(std.testing.allocator, entry_path, root, options);
     try std.testing.expect(public_after.source != source_after.source);
 }
@@ -980,8 +985,9 @@ test "dev fingerprint separates source css and public inputs" {
 test "build cache manifest and required outputs are validated" {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tdir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root);
     const dist_dir = try std.fs.path.join(std.testing.allocator, &.{ root, "dist" });
     defer std.testing.allocator.free(dist_dir);
@@ -1009,9 +1015,10 @@ test "build cache manifest and required outputs are validated" {
 test "build fingerprint includes build options" {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    try tmp.dir.writeFile(.{ .sub_path = "app.sax", .data = "<Component name=\"A\"><div></div></Component>" });
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try tdir.writeFile(.{ .sub_path = "app.sax", .data = "<Component name=\"A\"><div></div></Component>" });
+    const root = try tdir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root);
     const entry_path = try std.fs.path.join(std.testing.allocator, &.{ root, "app.sax" });
     defer std.testing.allocator.free(entry_path);
@@ -1024,10 +1031,11 @@ test "build fingerprint includes build options" {
 test "build fingerprint changes when explicit react include changes" {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    try tmp.dir.writeFile(.{ .sub_path = "app.sax", .data = "<Component name=\"A\"><div></div></Component>" });
-    try tmp.dir.writeFile(.{ .sub_path = "material.sax", .data = "<Component name=\"One\"><div></div></Component>" });
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try tdir.writeFile(.{ .sub_path = "app.sax", .data = "<Component name=\"A\"><div></div></Component>" });
+    try tdir.writeFile(.{ .sub_path = "material.sax", .data = "<Component name=\"One\"><div></div></Component>" });
+    const root = try tdir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root);
     const entry_path = try std.fs.path.join(std.testing.allocator, &.{ root, "app.sax" });
     defer std.testing.allocator.free(entry_path);
@@ -1035,8 +1043,8 @@ test "build fingerprint changes when explicit react include changes" {
     defer std.testing.allocator.free(include_path);
 
     const before = try buildFingerprint(std.testing.allocator, entry_path, root, .{ .use_react = true, .includes = &.{include_path} });
-    std.Thread.sleep(20 * std.time.ns_per_ms);
-    try tmp.dir.writeFile(.{ .sub_path = "material.sax", .data = "<Component name=\"Two\"><span></span></Component>" });
+    sio.io().sleep(.fromNanoseconds(20 * std.time.ns_per_ms), .awake) catch {};
+    try tdir.writeFile(.{ .sub_path = "material.sax", .data = "<Component name=\"Two\"><span></span></Component>" });
     const after = try buildFingerprint(std.testing.allocator, entry_path, root, .{ .use_react = true, .includes = &.{include_path} });
     try std.testing.expect(before != after);
 }
@@ -1044,9 +1052,10 @@ test "build fingerprint changes when explicit react include changes" {
 test "plugin fingerprint changes for same-size content edits" {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    try tmp.dir.writeFile(.{ .sub_path = "libplugin.so", .data = "aaaa" });
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try tdir.writeFile(.{ .sub_path = "libplugin.so", .data = "aaaa" });
+    const root = try tdir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root);
     const plugin_path = try std.fs.path.join(std.testing.allocator, &.{ root, "libplugin.so" });
     defer std.testing.allocator.free(plugin_path);
@@ -1055,7 +1064,7 @@ test "plugin fingerprint changes for same-size content edits" {
     try mixPluginPathFingerprint(std.testing.allocator, &before_hasher, plugin_path);
     const before = before_hasher.final();
 
-    try tmp.dir.writeFile(.{ .sub_path = "libplugin.so", .data = "bbbb" });
+    try tdir.writeFile(.{ .sub_path = "libplugin.so", .data = "bbbb" });
     var after_hasher = std.hash.Wyhash.init(0x5a17_71a6_1d11_a55a);
     try mixPluginPathFingerprint(std.testing.allocator, &after_hasher, plugin_path);
     const after = after_hasher.final();
