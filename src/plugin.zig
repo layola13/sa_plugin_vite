@@ -269,8 +269,12 @@ fn runViteCommandAbi(ctx: *const plugin_api.Context, argv: [*]const [*:0]const u
 
     const result = runViteCommand(&local_ctx, args, stdout_writer, stderr_writer) catch |err| {
         stderr_writer.print("error[SA-VITE]: command failed: {}\n", .{err}) catch {};
+        stderr_writer.flush() catch {};
+        stdout_writer.flush() catch {};
         return @intFromEnum(plugin_api.AbiStatus.failed);
     };
+    stdout_writer.flush() catch {};
+    stderr_writer.flush() catch {};
     if (result) |code| {
         out_code.* = code;
         return @intFromEnum(plugin_api.AbiStatus.ok);
