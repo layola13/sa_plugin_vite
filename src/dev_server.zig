@@ -1,4 +1,5 @@
 const std = @import("std");
+const sio = @import("sio");
 const build_config = @import("build_options");
 const sax_api = @import("sax_vite_api");
 const sax_build = sax_api.build;
@@ -85,24 +86,24 @@ fn sourceDir(path: []const u8) []const u8 {
 }
 
 fn sourceDirAbs(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    return try std.fs.cwd().realpathAlloc(allocator, sourceDir(path));
+    return try sio.cwd().realpathAlloc(allocator, sourceDir(path));
 }
 
 fn ensureParentDir(path: []const u8) !void {
     if (std.fs.path.dirname(path)) |dir| {
-        if (dir.len != 0) try std.fs.cwd().makePath(dir);
+        if (dir.len != 0) try sio.cwd().makePath(dir);
     }
 }
 
 fn writeAllFile(path: []const u8, bytes: []const u8) !void {
     try ensureParentDir(path);
-    var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+    var file = try sio.cwd().createFile(path, .{ .truncate = true });
     defer file.close();
     try file.writeAll(bytes);
 }
 
 fn copyFileTo(allocator: std.mem.Allocator, src_path: []const u8, dst_path: []const u8) !void {
-    const bytes = try std.fs.cwd().readFileAlloc(allocator, src_path, 64 * 1024 * 1024);
+    const bytes = try sio.cwd().readFileAlloc(allocator, src_path, 64 * 1024 * 1024);
     defer allocator.free(bytes);
     try writeAllFile(dst_path, bytes);
 }
@@ -111,7 +112,7 @@ fn copyPublicDir(allocator: std.mem.Allocator, src_root: []const u8, rel: []cons
     const dir_path = if (rel.len == 0) try allocator.dupe(u8, src_root) else try std.fs.path.join(allocator, &.{ src_root, rel });
     defer allocator.free(dir_path);
 
-    var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
+    var dir = try sio.cwd().openDir(dir_path, .{ .iterate = true });
     defer dir.close();
 
     var it = dir.iterate();
@@ -162,7 +163,11 @@ fn mixU64(hasher: *std.hash.Wyhash, value: u64) void {
     hasher.update(&buf);
 }
 
-fn mixI128(hasher: *std.hash.Wyhash, value: i128) void {
+fn mixI128(hasher: *std.hash.Wyhash, value: std.Io.Timestamp) void {
+    mixI128Raw(hasher, value.nanoseconds);
+}
+
+fn mixI128Raw(hasher: *std.hash.Wyhash, value: i128) void {
     var buf: [16]u8 = undefined;
     std.mem.writeInt(i128, &buf, value, .little);
     hasher.update(&buf);
@@ -205,7 +210,7 @@ fn mixSaStdFingerprint(allocator: std.mem.Allocator, hasher: *std.hash.Wyhash) !
 
 fn mixPluginPathFingerprint(allocator: std.mem.Allocator, hasher: *std.hash.Wyhash, path: []const u8) !void {
     mixBytes(hasher, path);
-    const stat = std.fs.cwd().statFile(path) catch |err| {
+    const stat = sio.cwd().statFile(path) catch |err| {
         mixBool(hasher, false);
         mixBytes(hasher, @errorName(err));
         return;
@@ -214,13 +219,13 @@ fn mixPluginPathFingerprint(allocator: std.mem.Allocator, hasher: *std.hash.Wyha
     mixU64(hasher, stat.size);
     mixI128(hasher, stat.mtime);
     var file = if (std.fs.path.isAbsolute(path))
-        std.fs.openFileAbsolute(path, .{}) catch |err| {
+        sio.openFileAbsolute(path, .{}) catch |err| {
             mixBool(hasher, false);
             mixBytes(hasher, @errorName(err));
             return;
         }
     else
-        std.fs.cwd().openFile(path, .{}) catch |err| {
+        sio.cwd().openFile(path, .{}) catch |err| {
             mixBool(hasher, false);
             mixBytes(hasher, @errorName(err));
             return;
@@ -233,7 +238,7 @@ fn mixPluginPathFingerprint(allocator: std.mem.Allocator, hasher: *std.hash.Wyha
 }
 
 fn mixPluginEnvironmentFingerprint(allocator: std.mem.Allocator, hasher: *std.hash.Wyhash) !void {
-    const value = std.process.getEnvVarOwned(allocator, "SA_PLUGINS_PATH") catch |err| switch (err) {
+    const value = sio.getEnvVarOwned(allocator, "SA_PLUGINS_PATH") catch |err| switch (err) {
         error.EnvironmentVariableNotFound => {
             mixBool(hasher, false);
             return;
@@ -278,7 +283,7 @@ fn readBuildCacheFingerprint(allocator: std.mem.Allocator, dist_dir: []const u8)
     const manifest_path = try buildCacheManifestPath(allocator, dist_dir);
     defer allocator.free(manifest_path);
 
-    const bytes = std.fs.cwd().readFileAlloc(allocator, manifest_path, 4096) catch |err| switch (err) {
+    const bytes = sio.cwd().readFileAlloc(allocator, manifest_path, 4096) catch |err| switch (err) {
         error.FileNotFound => return null,
         else => return err,
     };
@@ -304,7 +309,7 @@ fn writeBuildCacheFingerprint(allocator: std.mem.Allocator, dist_dir: []const u8
 fn distFilePresent(allocator: std.mem.Allocator, dist_dir: []const u8, rel_path: []const u8) !bool {
     const path = try std.fs.path.join(allocator, &.{ dist_dir, rel_path });
     defer allocator.free(path);
-    const stat = std.fs.cwd().statFile(path) catch |err| switch (err) {
+    const stat = sio.cwd().statFile(path) catch |err| switch (err) {
         error.FileNotFound => return false,
         else => return err,
     };
@@ -453,7 +458,7 @@ fn refreshAssetsOnly(
 }
 
 fn readSource(allocator: std.mem.Allocator, sax_file: []const u8, stderr: anytype) ![]u8 {
-    return std.fs.cwd().readFileAlloc(allocator, sax_file, 16 * 1024 * 1024) catch |err| {
+    return sio.cwd().readFileAlloc(allocator, sax_file, 16 * 1024 * 1024) catch |err| {
         try stderr.print("error: failed to read {s}: {}\n", .{ sax_file, err });
         return error.ReadFailed;
     };
@@ -663,7 +668,7 @@ fn serveStaticFile(allocator: std.mem.Allocator, request: *http_api.HttpRequest,
     defer allocator.free(relative);
     const full_path = try std.fs.path.join(allocator, &.{ dist_dir, relative });
     defer allocator.free(full_path);
-    const body = std.fs.cwd().readFileAlloc(allocator, full_path, 32 * 1024 * 1024) catch |err| switch (err) {
+    const body = sio.cwd().readFileAlloc(allocator, full_path, 32 * 1024 * 1024) catch |err| switch (err) {
         error.FileNotFound => {
             try sendResponse(request, .not_found, "text/plain", "not found\n");
             return;
@@ -671,7 +676,7 @@ fn serveStaticFile(allocator: std.mem.Allocator, request: *http_api.HttpRequest,
         error.IsDir => {
             const index_path = try std.fs.path.join(allocator, &.{ full_path, "index.html" });
             defer allocator.free(index_path);
-            const index_body = std.fs.cwd().readFileAlloc(allocator, index_path, 32 * 1024 * 1024) catch |index_err| switch (index_err) {
+            const index_body = sio.cwd().readFileAlloc(allocator, index_path, 32 * 1024 * 1024) catch |index_err| switch (index_err) {
                 error.FileNotFound => {
                     try sendResponse(request, .not_found, "text/plain", "not found\n");
                     return;
@@ -715,7 +720,7 @@ fn sseClientThread(request: *http_api.HttpRequest, build_version: *std.atomic.Va
             last = current;
             writeSseEvent(response, current, build_error.load(.seq_cst)) catch return;
         }
-        std.Thread.sleep(100 * ns_per_ms);
+        std.Io.sleep(sio.io(), .fromNanoseconds(100 * ns_per_ms), .awake) catch {};
     }
 }
 
@@ -753,7 +758,7 @@ pub fn runBuild(
 ) !u8 {
     const dist_dir = if (dist_dir_opt) |dir| try allocator.dupe(u8, dir) else try defaultDistDir(allocator, entry_sax);
     defer allocator.free(dist_dir);
-    try std.fs.cwd().makePath(dist_dir);
+    try sio.cwd().makePath(dist_dir);
 
     const watch_root = try sourceDirAbs(allocator, entry_sax);
     defer allocator.free(watch_root);
@@ -790,7 +795,7 @@ pub fn runDev(
 ) !u8 {
     const dist_dir = if (options.dist_dir) |dir| try allocator.dupe(u8, dir) else try defaultDistDir(allocator, options.entry_sax);
     defer allocator.free(dist_dir);
-    try std.fs.cwd().makePath(dist_dir);
+    try sio.cwd().makePath(dist_dir);
 
     const build_options = BuildOptions{ .use_react = options.use_react, .includes = options.includes, .title = options.title, .css = options.css, .public_dir = options.public_dir };
 
@@ -863,7 +868,7 @@ fn serveLoop(
 
     var server = try http_api.HttpServer.init(allocator);
     defer server.deinit();
-    try server.startWithOptions("127.0.0.1", port, .{ .reuse_address = true, .force_nonblocking = true });
+    try server.startWithOptions("127.0.0.1", port, .{ .reuse_address = true });
     try stdout.print("✓ vite {s} server listening on http://127.0.0.1:{d}\n", .{ @tagName(mode), port });
 
     const scan_interval_ms = devScanIntervalMs(debounce_ms, build_options.public_dir != null);
@@ -874,19 +879,19 @@ fn serveLoop(
         }
 
         if (mode == .dev) {
-            const now_ns = std.time.nanoTimestamp();
+            const now_ns = sio.nanoTimestamp();
             if (now_ns >= next_scan_ns) {
                 next_scan_ns = now_ns + @as(i128, @intCast(scan_interval_ms * ns_per_ms));
                 const path = entry_sax.?;
                 const current_fingerprint = devFingerprint(allocator, path, watch_root.?, build_options) catch |err| {
                     try stderr.print("error: failed to scan dev inputs under {s}: {}\n", .{ watch_root.?, err });
-                    std.Thread.sleep(100 * ns_per_ms);
+                    std.Io.sleep(sio.io(), .fromNanoseconds(100 * ns_per_ms), .awake) catch {};
                     continue;
                 };
                 if (last_fingerprint == null) {
                     last_fingerprint = current_fingerprint;
                 } else if (!current_fingerprint.eql(last_fingerprint.?)) {
-                    std.Thread.sleep(debounce_ms * ns_per_ms);
+                    std.Io.sleep(sio.io(), .fromNanoseconds(debounce_ms * ns_per_ms), .awake) catch {};
                     const previous_fingerprint = last_fingerprint.?;
                     const debounced_fingerprint = devFingerprint(allocator, path, watch_root.?, build_options) catch current_fingerprint;
                     last_fingerprint = debounced_fingerprint;
@@ -911,12 +916,12 @@ fn serveLoop(
 
         const request = server.accept() catch |err| {
             if (err == error.WouldBlock) {
-                std.Thread.sleep(50 * ns_per_ms);
+                std.Io.sleep(sio.io(), .fromNanoseconds(50 * ns_per_ms), .awake) catch {};
                 continue;
             }
             if (isTransientAcceptError(err)) continue;
             try stderr.print("error: vite accept failed: {}\n", .{err});
-            std.Thread.sleep(50 * ns_per_ms);
+            std.Io.sleep(sio.io(), .fromNanoseconds(50 * ns_per_ms), .awake) catch {};
             continue;
         };
         handleRequest(state, request) catch |err| switch (err) {
@@ -938,13 +943,14 @@ test "static relative path rejects traversal" {
 test "dev fingerprint separates source css and public inputs" {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    try tmp.dir.writeFile(.{ .sub_path = "app.sax", .data = "<Component name=\"A\"><div></div></Component>" });
-    try tmp.dir.writeFile(.{ .sub_path = "style.css", .data = "body{color:#111}" });
-    try tmp.dir.makePath("public");
-    try tmp.dir.writeFile(.{ .sub_path = "public/info.txt", .data = "asset-a" });
+    try tdir.writeFile(.{ .sub_path = "app.sax", .data = "<Component name=\"A\"><div></div></Component>" });
+    try tdir.writeFile(.{ .sub_path = "style.css", .data = "body{color:#111}" });
+    try tdir.makePath("public");
+    try tdir.writeFile(.{ .sub_path = "public/info.txt", .data = "asset-a" });
 
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tdir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root);
     const entry_path = try std.fs.path.join(std.testing.allocator, &.{ root, "app.sax" });
     defer std.testing.allocator.free(entry_path);
@@ -956,22 +962,22 @@ test "dev fingerprint separates source css and public inputs" {
     const options = BuildOptions{ .css = css_path, .public_dir = public_dir };
     const before = try devFingerprint(std.testing.allocator, entry_path, root, options);
 
-    std.Thread.sleep(20 * std.time.ns_per_ms);
-    try tmp.dir.writeFile(.{ .sub_path = "style.css", .data = "body{color:#222;background:#fff}" });
+    sio.io().sleep(.fromNanoseconds(20 * std.time.ns_per_ms), .awake) catch {};
+    try tdir.writeFile(.{ .sub_path = "style.css", .data = "body{color:#222;background:#fff}" });
     const css_after = try devFingerprint(std.testing.allocator, entry_path, root, options);
     try std.testing.expectEqual(before.source, css_after.source);
     try std.testing.expect(before.css != css_after.css);
     try std.testing.expectEqual(before.public, css_after.public);
 
-    std.Thread.sleep(20 * std.time.ns_per_ms);
-    try tmp.dir.writeFile(.{ .sub_path = "public/info.txt", .data = "asset-b-updated" });
+    sio.io().sleep(.fromNanoseconds(20 * std.time.ns_per_ms), .awake) catch {};
+    try tdir.writeFile(.{ .sub_path = "public/info.txt", .data = "asset-b-updated" });
     const public_after = try devFingerprint(std.testing.allocator, entry_path, root, options);
     try std.testing.expectEqual(css_after.source, public_after.source);
     try std.testing.expectEqual(css_after.css, public_after.css);
     try std.testing.expect(css_after.public != public_after.public);
 
-    std.Thread.sleep(20 * std.time.ns_per_ms);
-    try tmp.dir.writeFile(.{ .sub_path = "app.sax", .data = "<Component name=\"A\"><p>x</p></Component>" });
+    sio.io().sleep(.fromNanoseconds(20 * std.time.ns_per_ms), .awake) catch {};
+    try tdir.writeFile(.{ .sub_path = "app.sax", .data = "<Component name=\"A\"><p>x</p></Component>" });
     const source_after = try devFingerprint(std.testing.allocator, entry_path, root, options);
     try std.testing.expect(public_after.source != source_after.source);
 }
@@ -979,12 +985,13 @@ test "dev fingerprint separates source css and public inputs" {
 test "build cache manifest and required outputs are validated" {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tdir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root);
     const dist_dir = try std.fs.path.join(std.testing.allocator, &.{ root, "dist" });
     defer std.testing.allocator.free(dist_dir);
-    try std.fs.cwd().makePath(dist_dir);
+    try sio.cwd().makePath(dist_dir);
 
     try writeBuildCacheFingerprint(std.testing.allocator, dist_dir, 0x1234);
     try std.testing.expectEqual(@as(?u64, 0x1234), try readBuildCacheFingerprint(std.testing.allocator, dist_dir));
@@ -1008,9 +1015,10 @@ test "build cache manifest and required outputs are validated" {
 test "build fingerprint includes build options" {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    try tmp.dir.writeFile(.{ .sub_path = "app.sax", .data = "<Component name=\"A\"><div></div></Component>" });
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try tdir.writeFile(.{ .sub_path = "app.sax", .data = "<Component name=\"A\"><div></div></Component>" });
+    const root = try tdir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root);
     const entry_path = try std.fs.path.join(std.testing.allocator, &.{ root, "app.sax" });
     defer std.testing.allocator.free(entry_path);
@@ -1023,10 +1031,11 @@ test "build fingerprint includes build options" {
 test "build fingerprint changes when explicit react include changes" {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    try tmp.dir.writeFile(.{ .sub_path = "app.sax", .data = "<Component name=\"A\"><div></div></Component>" });
-    try tmp.dir.writeFile(.{ .sub_path = "material.sax", .data = "<Component name=\"One\"><div></div></Component>" });
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try tdir.writeFile(.{ .sub_path = "app.sax", .data = "<Component name=\"A\"><div></div></Component>" });
+    try tdir.writeFile(.{ .sub_path = "material.sax", .data = "<Component name=\"One\"><div></div></Component>" });
+    const root = try tdir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root);
     const entry_path = try std.fs.path.join(std.testing.allocator, &.{ root, "app.sax" });
     defer std.testing.allocator.free(entry_path);
@@ -1034,8 +1043,8 @@ test "build fingerprint changes when explicit react include changes" {
     defer std.testing.allocator.free(include_path);
 
     const before = try buildFingerprint(std.testing.allocator, entry_path, root, .{ .use_react = true, .includes = &.{include_path} });
-    std.Thread.sleep(20 * std.time.ns_per_ms);
-    try tmp.dir.writeFile(.{ .sub_path = "material.sax", .data = "<Component name=\"Two\"><span></span></Component>" });
+    sio.io().sleep(.fromNanoseconds(20 * std.time.ns_per_ms), .awake) catch {};
+    try tdir.writeFile(.{ .sub_path = "material.sax", .data = "<Component name=\"Two\"><span></span></Component>" });
     const after = try buildFingerprint(std.testing.allocator, entry_path, root, .{ .use_react = true, .includes = &.{include_path} });
     try std.testing.expect(before != after);
 }
@@ -1043,9 +1052,10 @@ test "build fingerprint changes when explicit react include changes" {
 test "plugin fingerprint changes for same-size content edits" {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    try tmp.dir.writeFile(.{ .sub_path = "libplugin.so", .data = "aaaa" });
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try tdir.writeFile(.{ .sub_path = "libplugin.so", .data = "aaaa" });
+    const root = try tdir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root);
     const plugin_path = try std.fs.path.join(std.testing.allocator, &.{ root, "libplugin.so" });
     defer std.testing.allocator.free(plugin_path);
@@ -1054,7 +1064,7 @@ test "plugin fingerprint changes for same-size content edits" {
     try mixPluginPathFingerprint(std.testing.allocator, &before_hasher, plugin_path);
     const before = before_hasher.final();
 
-    try tmp.dir.writeFile(.{ .sub_path = "libplugin.so", .data = "bbbb" });
+    try tdir.writeFile(.{ .sub_path = "libplugin.so", .data = "bbbb" });
     var after_hasher = std.hash.Wyhash.init(0x5a17_71a6_1d11_a55a);
     try mixPluginPathFingerprint(std.testing.allocator, &after_hasher, plugin_path);
     const after = after_hasher.final();
