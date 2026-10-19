@@ -10,7 +10,11 @@ pub fn build(b: *std.Build) void {
     // local stub instead of LLVM (same C ABI, runtime "backend disabled" error).
     const enable_llvm = b.option(bool, "llvm", "Link the LLVM-C backend (needs LLVM dev headers/lib). Use -Dllvm=false for bootstrap.") orelse true;
     validateLlvmConfig(b, enable_llvm, llvm_include_dir, llvm_lib_dir, llvm_lib_name);
-    const sa_repo_root = b.option([]const u8, "sa-repo-root", "SA repository root used to resolve sa_std imports.") orelse "../sci";
+    const sa_repo_root_opt = b.option([]const u8, "sa-repo-root", "SA repository root used to resolve sa_std imports.") orelse "../sci";
+    const sa_repo_root = if (std.fs.path.isAbsolute(sa_repo_root_opt)) sa_repo_root_opt else blk: {
+        const root_path = b.root.root_dir.path orelse ".";
+        break :blk std.fs.path.resolve(b.allocator, &.{ root_path, sa_repo_root_opt }) catch @panic("OOM");
+    };
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "repo_root", sa_repo_root);
     const build_options_module = build_options.createModule();
