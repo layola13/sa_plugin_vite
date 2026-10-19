@@ -1,5 +1,9 @@
 # sa_plugin_vite
 
+> **Build requirement: Zig 0.17** — this plugin targets and is verified against **Zig 0.17.0**. Build and test with Zig 0.17; older toolchains such as 0.14.x are not supported.
+> 本插件需使用 **Zig 0.17** 编译与测试。
+
+
 > SAX 热重载开发服务器插件（dev server + hot reload）。
 > **Phase 2 基础体验** —— 当前已具备可安装插件清单、动态库构建、descriptor/skills 导出、`vite build`、`vite dev` 静态服务、递归 `.sax` 监听、防抖和 `/__sax_live` 自动刷新/错误信号。实现路线见 `plan.md`。
 
