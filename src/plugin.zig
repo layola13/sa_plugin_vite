@@ -350,3 +350,19 @@ test "vite command parses debounce option" {
     const parsed = try parseEntryCommandArgs(&.{ "sa", "vite", "dev", "app.sax", "--debounce-ms", "25" }, 3);
     try std.testing.expectEqual(@as(u64, 25), parsed.debounce_ms);
 }
+// NOTE(Zig 0.17): force analysis of imported export decls so ABI symbols are emitted.
+comptime {
+        for (std.meta.declarations(_api)) |d| {
+            const decl = @field(_api, d);
+            switch (@typeInfo(@TypeOf(decl))) {
+                .@"fn" => _ = &decl,
+                else => {},
+            }
+        }
+}
+// NOTE(Zig 0.17): force analysis of imported export decls so ABI symbols are emitted.
+comptime {
+    for (.{ "sa_vite_dev_new", "sa_vite_dev_set_entry", "sa_vite_dev_set_out_dir", "sa_vite_dev_set_port", "sa_vite_dev_set_debounce_ms", "sa_vite_dev_run", "sa_vite_dev_stop", "sa_vite_dev_free" }) |name| {
+        _ = &@field(_api, name);
+    }
+}

@@ -1,4 +1,5 @@
 const std = @import("std");
+const sio = @import("sio");
 const plugin_api = @import("plugin_api");
 const dev_server = @import("dev_server.zig");
 
@@ -84,13 +85,19 @@ pub export fn sa_vite_dev_run(handle: ?*anyopaque) u32 {
     const entry = session.entry_sax orelse return @intFromEnum(plugin_api.AbiStatus.failed);
     session.stop_signal.store(false, .seq_cst);
 
+    var out_buf: [4096]u8 = undefined;
+    var err_buf: [4096]u8 = undefined;
+    var out_writer = sio.getStdOut().writer(&out_buf);
+    var err_writer = sio.getStdErr().writer(&err_buf);
+    defer out_writer.interface.flush() catch {};
+    defer err_writer.interface.flush() catch {};
     const code = dev_server.runDev(allocator, .{
         .entry_sax = entry,
         .dist_dir = session.dist_dir,
         .port = session.port,
         .debounce_ms = session.debounce_ms,
         .stop_signal = &session.stop_signal,
-    }, std.io.getStdOut().writer(), std.io.getStdErr().writer()) catch return @intFromEnum(plugin_api.AbiStatus.failed);
+    }, &out_writer.interface, &err_writer.interface) catch return @intFromEnum(plugin_api.AbiStatus.failed);
     if (code == 0) return @intFromEnum(plugin_api.AbiStatus.ok);
     return @intFromEnum(plugin_api.AbiStatus.failed);
 }
